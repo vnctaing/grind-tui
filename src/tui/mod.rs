@@ -386,26 +386,36 @@ fn draw_problem_title(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_problem_sections(f: &mut Frame, area: Rect, app: &App, textarea: &tui_textarea::TextArea) {
-    let desc_constraint = if app.desc_collapsed {
-        Constraint::Length(1)
+    // Two columns: description (left) | code+output (right)
+    let cols = if app.desc_collapsed {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(0), Constraint::Min(0)])
+            .split(area)
     } else {
-        Constraint::Min(0)
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+            .split(area)
     };
-    let code_constraint = Constraint::Min(0);
+
+    if !app.desc_collapsed {
+        draw_desc_section(f, cols[0], app);
+    }
+
+    // Right column: code (top 75%) + output (bottom 25%)
     let output_constraint = if app.output_collapsed {
         Constraint::Length(1)
     } else {
-        Constraint::Min(0)
+        Constraint::Percentage(25)
     };
-
-    let sections = Layout::default()
+    let right_rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([desc_constraint, code_constraint, output_constraint])
-        .split(area);
+        .constraints([Constraint::Min(0), output_constraint])
+        .split(cols[1]);
 
-    draw_desc_section(f, sections[0], app);
-    draw_code_section(f, sections[1], app, textarea);
-    draw_output_section(f, sections[2], app);
+    draw_code_section(f, right_rows[0], app, textarea);
+    draw_output_section(f, right_rows[1], app);
 }
 
 fn draw_desc_section(f: &mut Frame, area: Rect, app: &App) {
