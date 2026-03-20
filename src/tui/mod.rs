@@ -113,8 +113,6 @@ pub struct App {
     pub output_scroll: u16,
     pub client: Option<std::sync::Arc<crate::api::LeetCodeClient>>,
     pub page: Page,
-    pub desc_collapsed: bool,
-    pub output_collapsed: bool,
     pub editing: bool,
     pub cursor_file: Option<String>,
     pub cursor_file_mtime: Option<std::time::SystemTime>,
@@ -138,8 +136,6 @@ impl App {
             output_scroll: 0,
             client: None,
             page: Page::List,
-            desc_collapsed: false,
-            output_collapsed: false,
             editing: false,
             cursor_file: None,
             cursor_file_mtime: None,
@@ -427,26 +423,16 @@ fn draw_problem_title(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_problem_sections(f: &mut Frame, area: Rect, app: &App, textarea: &tui_textarea::TextArea) {
-    let cols = if app.desc_collapsed {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(0), Constraint::Min(0)])
-            .split(area)
-    } else {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-            .split(area)
-    };
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .split(area);
 
-    if !app.desc_collapsed {
-        draw_desc_section(f, cols[0], app, app.focused_panel == Panel::Description);
-    }
+    draw_desc_section(f, cols[0], app, app.focused_panel == Panel::Description);
 
-    let output_constraint = if app.output_collapsed { Constraint::Length(1) } else { Constraint::Percentage(25) };
     let right_rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), output_constraint])
+        .constraints([Constraint::Min(0), Constraint::Percentage(25)])
         .split(cols[1]);
 
     draw_code_section(f, right_rows[0], app, textarea, app.focused_panel == Panel::Code);
@@ -457,10 +443,11 @@ fn draw_desc_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
     let content = app.selected_problem()
         .map(|p| p.description.as_str())
         .unwrap_or("Select a problem and press Enter to load it.");
+    let title = if focused { " Description [focused] " } else { " [p] Description " };
     let border_style = if focused { Style::default().fg(Color::Cyan) } else { Style::default() };
     f.render_widget(
         Paragraph::new(content)
-            .block(Block::default().borders(Borders::ALL).title(" [P] Description ").border_style(border_style))
+            .block(Block::default().borders(Borders::ALL).title(title).border_style(border_style))
             .wrap(Wrap { trim: false })
             .scroll((app.desc_scroll, 0)),
         area,
@@ -474,11 +461,13 @@ fn draw_code_section(
     textarea: &tui_textarea::TextArea,
     focused: bool,
 ) {
-    let cursor_hint = if app.cursor_file.is_some() { " auto-sync ON " } else { "" };
+    let cursor_hint = if app.cursor_file.is_some() { " ⟳cursor " } else { "" };
     let lang_label = if app.editing {
-        format!(" ✎ editing — {} {}(Esc to save) ", app.language, cursor_hint)
+        format!(" ✎ Code [editing] — {} {}(Esc to save) ", app.language, cursor_hint)
+    } else if focused {
+        format!(" Code [focused]{}— {} ", cursor_hint, app.language)
     } else {
-        format!(" [e]edit  [C]cursor {}— {} ", cursor_hint, app.language)
+        format!(" [e] Code{}— {} ", cursor_hint, app.language)
     };
 
     let border_style = if app.editing {
@@ -544,17 +533,6 @@ fn draw_code_section(
 }
 
 fn draw_output_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
-    if app.output_collapsed {
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(" [O] Output ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-                Span::styled(" (collapsed — press o to expand)", Style::default().fg(Color::DarkGray)),
-            ])).style(Style::default().bg(Color::DarkGray)),
-            area,
-        );
-        return;
-    }
-
     let output_style = if app.output.contains("Accepted") || app.output.contains("passed") {
         Style::default().fg(Color::Green)
     } else if app.output.contains("Error") || app.output.contains("Wrong") {
@@ -563,10 +541,11 @@ fn draw_output_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
         Style::default()
     };
     let border_style = if focused { Style::default().fg(Color::Cyan) } else { Style::default() };
+    let title = if focused { " Output [focused] " } else { " [o] Output " };
 
     f.render_widget(
         Paragraph::new(app.output.as_str())
-            .block(Block::default().borders(Borders::ALL).title(" [O] Output ").border_style(border_style))
+            .block(Block::default().borders(Borders::ALL).title(title).border_style(border_style))
             .style(output_style)
             .wrap(Wrap { trim: false })
             .scroll((app.output_scroll, 0)),
@@ -579,7 +558,7 @@ fn draw_problem_status(f: &mut Frame, area: Rect, app: &App) {
         " [Esc]save  [r]run  [s]submit".to_string()
     } else {
         format!(
-            " [b]back  [e]edit  [C]cursor  [r]run  [s]submit  [l]lang:{}  [p]desc  [o]output  [Tab]focus  [d]disguise  [q]quit",
+            " [b]back  [e]edit  [C]cursor  [r]run  [s]submit  [l]lang:{}  [p]problem  [o]output  [Tab]cycle  [d]disguise  [q]quit",
             app.language,
         )
     };
@@ -644,8 +623,8 @@ fn handle_key_problem(app: &mut App, key: KeyCode) -> Action {
             Action::None
         }
         KeyCode::Char('b') => { app.page = Page::List; Action::None }
-        KeyCode::Char('p') => { app.desc_collapsed = !app.desc_collapsed; Action::None }
-        KeyCode::Char('o') => { app.output_collapsed = !app.output_collapsed; Action::None }
+        KeyCode::Char('p') => { app.focused_panel = Panel::Description; Action::None }
+        KeyCode::Char('o') => { app.focused_panel = Panel::Output; Action::None }
         KeyCode::Char('r') => Action::RunTests,
         KeyCode::Char('s') => Action::Submit,
 
@@ -803,6 +782,7 @@ fn event_loop(
                             .unwrap_or_default();
                         textarea = tui_textarea::TextArea::new(lines);
                         app.editing = true;
+                        app.focused_panel = Panel::Code;
                     }
 
                     Action::OpenCursor => {
