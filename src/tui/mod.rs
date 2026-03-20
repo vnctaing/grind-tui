@@ -469,13 +469,13 @@ fn draw_code_section(
     textarea: &tui_textarea::TextArea,
     focused: bool,
 ) {
-    let cursor_hint = if app.cursor_file.is_some() { " ⟳cursor " } else { "" };
+    let cursor_hint = if app.cursor_file.is_some() { " ⟳ auto-sync " } else { " [C]cursor " };
     let lang_label = if app.editing {
-        format!(" ✎ Code [editing] — {} {}(Esc to save) ", app.language, cursor_hint)
+        format!(" ✎ Code [editing] —{}— {} (Esc to save) ", cursor_hint, app.language)
     } else if focused {
-        format!(" Code [focused]{}— {} ", cursor_hint, app.language)
+        format!(" Code [focused] —{}— {} ", cursor_hint, app.language)
     } else {
-        format!(" [e] Code{}— {} ", cursor_hint, app.language)
+        format!(" [e] Code —{}— {} ", cursor_hint, app.language)
     };
 
     let border_style = if app.editing {
