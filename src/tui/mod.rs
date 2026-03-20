@@ -116,6 +116,7 @@ pub struct App {
     pub desc_collapsed: bool,
     pub output_collapsed: bool,
     pub cursor_file: Option<String>,
+    pub cursor_file_mtime: Option<std::time::SystemTime>,
 }
 
 impl App {
@@ -139,6 +140,7 @@ impl App {
             desc_collapsed: false,
             output_collapsed: false,
             cursor_file: None,
+            cursor_file_mtime: None,
         }
     }
 
@@ -190,7 +192,7 @@ fn ext_for_lang(lang: &str) -> &'static str {
 }
 
 fn editor_cmd() -> String {
-    std::env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string())
+    std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string())
 }
 
 fn temp_file_path(slug: &str, lang: &str) -> String {
@@ -755,6 +757,35 @@ fn event_loop(
         list_state.select(Some(app.selected));
         terminal.draw(|f| draw(f, app, list_state))?;
 
+        // When Cursor is open, poll on a short timeout so we can auto-sync on file changes.
+        let timeout = if app.cursor_file.is_some() {
+            std::time::Duration::from_millis(500)
+        } else {
+            std::time::Duration::from_secs(3600)
+        };
+
+        if !event::poll(timeout)? {
+            // Timeout — check if cursor file was modified
+            if let Some(ref path) = app.cursor_file.clone() {
+                if let Ok(meta) = std::fs::metadata(path) {
+                    if let Ok(mtime) = meta.modified() {
+                        let changed = app.cursor_file_mtime.map(|prev| mtime > prev).unwrap_or(true);
+                        if changed {
+                            app.cursor_file_mtime = Some(mtime);
+                            if let Ok(code) = std::fs::read_to_string(path) {
+                                if let Some(p) = app.selected_problem_mut() {
+                                    p.code = code;
+                                }
+                                app.code_scroll = 0;
+                                app.output = "Auto-synced from Cursor.".to_string();
+                            }
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
         match event::read()? {
             Event::Mouse(mouse) => {
                 match mouse.kind {
@@ -806,12 +837,12 @@ fn event_loop(
                         if let Some(p) = app.selected_problem() {
                             let path = temp_file_path(&p.slug, &app.language);
                             std::fs::write(&path, &p.code)?;
+                            let mtime = std::fs::metadata(&path).ok()
+                                .and_then(|m| m.modified().ok());
                             std::process::Command::new("cursor").arg(&path).spawn().ok();
                             app.cursor_file = Some(path.clone());
-                            app.output = format!(
-                                "Opened in Cursor: {}\nPress [y] to sync changes back.",
-                                path
-                            );
+                            app.cursor_file_mtime = mtime;
+                            app.output = format!("Opened in Cursor: {}\nAuto-syncing on save…", path);
                         }
                     }
 
@@ -825,9 +856,7 @@ fn event_loop(
                                     app.code_scroll = 0;
                                     app.output = "Synced from Cursor.".to_string();
                                 }
-                                Err(e) => {
-                                    app.output = format!("Sync error: {e}");
-                                }
+                                Err(e) => { app.output = format!("Sync error: {e}"); }
                             }
                         } else {
                             app.output = "No Cursor session active. Press [C] to open in Cursor first.".to_string();
