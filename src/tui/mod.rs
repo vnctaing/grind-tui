@@ -114,6 +114,8 @@ pub struct App {
     pub client: Option<std::sync::Arc<crate::api::LeetCodeClient>>,
     pub page: Page,
     pub editing: bool,
+    pub desc_collapsed: bool,
+    pub output_collapsed: bool,
     pub cursor_file: Option<String>,
     pub cursor_file_mtime: Option<std::time::SystemTime>,
 }
@@ -137,6 +139,8 @@ impl App {
             client: None,
             page: Page::List,
             editing: false,
+            desc_collapsed: false,
+            output_collapsed: false,
             cursor_file: None,
             cursor_file_mtime: None,
         }
@@ -423,16 +427,20 @@ fn draw_problem_title(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_problem_sections(f: &mut Frame, area: Rect, app: &App, textarea: &tui_textarea::TextArea) {
+    let desc_width = if app.desc_collapsed { Constraint::Length(0) } else { Constraint::Percentage(40) };
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .constraints([desc_width, Constraint::Min(0)])
         .split(area);
 
-    draw_desc_section(f, cols[0], app, app.focused_panel == Panel::Description);
+    if !app.desc_collapsed {
+        draw_desc_section(f, cols[0], app, app.focused_panel == Panel::Description);
+    }
 
+    let output_height = if app.output_collapsed { Constraint::Length(1) } else { Constraint::Percentage(25) };
     let right_rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Percentage(25)])
+        .constraints([Constraint::Min(0), output_height])
         .split(cols[1]);
 
     draw_code_section(f, right_rows[0], app, textarea, app.focused_panel == Panel::Code);
@@ -443,7 +451,7 @@ fn draw_desc_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
     let content = app.selected_problem()
         .map(|p| p.description.as_str())
         .unwrap_or("Select a problem and press Enter to load it.");
-    let title = if focused { " Description [focused] " } else { " [p] Description " };
+    let title = if focused { " Description [focused — p to collapse] " } else { " [p] Description " };
     let border_style = if focused { Style::default().fg(Color::Cyan) } else { Style::default() };
     f.render_widget(
         Paragraph::new(content)
@@ -533,6 +541,18 @@ fn draw_code_section(
 }
 
 fn draw_output_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
+    if app.output_collapsed {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                " [o] Output ▸ (expand) ",
+                Style::default().fg(Color::DarkGray),
+            ))
+            .style(Style::default().bg(Color::Reset)),
+            area,
+        );
+        return;
+    }
+
     let output_style = if app.output.contains("Accepted") || app.output.contains("passed") {
         Style::default().fg(Color::Green)
     } else if app.output.contains("Error") || app.output.contains("Wrong") {
@@ -541,7 +561,7 @@ fn draw_output_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
         Style::default()
     };
     let border_style = if focused { Style::default().fg(Color::Cyan) } else { Style::default() };
-    let title = if focused { " Output [focused] " } else { " [o] Output " };
+    let title = if focused { " Output [focused — o to collapse] " } else { " [o] Output " };
 
     f.render_widget(
         Paragraph::new(app.output.as_str())
@@ -623,8 +643,32 @@ fn handle_key_problem(app: &mut App, key: KeyCode) -> Action {
             Action::None
         }
         KeyCode::Char('b') => { app.page = Page::List; Action::None }
-        KeyCode::Char('p') => { app.focused_panel = Panel::Description; Action::None }
-        KeyCode::Char('o') => { app.focused_panel = Panel::Output; Action::None }
+
+        KeyCode::Char('p') => {
+            if app.desc_collapsed {
+                app.desc_collapsed = false;
+                app.focused_panel = Panel::Description;
+            } else if app.focused_panel == Panel::Description {
+                app.desc_collapsed = true;
+                app.focused_panel = Panel::Code;
+            } else {
+                app.focused_panel = Panel::Description;
+            }
+            Action::None
+        }
+
+        KeyCode::Char('o') => {
+            if app.output_collapsed {
+                app.output_collapsed = false;
+                app.focused_panel = Panel::Output;
+            } else if app.focused_panel == Panel::Output {
+                app.output_collapsed = true;
+                app.focused_panel = Panel::Code;
+            } else {
+                app.focused_panel = Panel::Output;
+            }
+            Action::None
+        }
         KeyCode::Char('r') => Action::RunTests,
         KeyCode::Char('s') => Action::Submit,
 
