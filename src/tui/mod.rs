@@ -564,7 +564,12 @@ fn draw_code_section(
             .enumerate()
             .map(|(row, line)| {
                 let col = if row == cursor_row { Some(cursor_col) } else { None };
-                tokenize_line_for_editor(line, keywords, lang, col)
+                let mut l = tokenize_line_for_editor(line, keywords, lang, col);
+                l.spans.insert(0, Span::styled(
+                    format!("{:>3} ", row + 1),
+                    Style::default().fg(Color::DarkGray),
+                ));
+                l
             })
             .collect();
 
@@ -590,10 +595,20 @@ fn draw_code_section(
             Style::default()
         };
 
-        let highlighted = highlight_code(
+        let highlighted: Vec<Line<'static>> = highlight_code(
             app.selected_problem().map(|p| p.code.as_str()).unwrap_or("# Select a problem and press Enter"),
             &app.language,
-        );
+        )
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut l)| {
+            l.spans.insert(0, Span::styled(
+                format!("{:>3} ", i + 1),
+                Style::default().fg(Color::DarkGray),
+            ));
+            l
+        })
+        .collect();
         f.render_widget(
             Paragraph::new(highlighted)
                 .block(
@@ -796,6 +811,7 @@ pub async fn run(app: &mut App) -> Result<ExitReason, Box<dyn std::error::Error>
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     execute!(stdout, crossterm::event::EnableMouseCapture)?;
+    execute!(stdout, crossterm::event::EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -805,6 +821,7 @@ pub async fn run(app: &mut App) -> Result<ExitReason, Box<dyn std::error::Error>
     let reason = event_loop(&mut terminal, app, &mut list_state)?;
 
     disable_raw_mode()?;
+    execute!(terminal.backend_mut(), crossterm::event::DisableBracketedPaste)?;
     execute!(terminal.backend_mut(), crossterm::event::DisableMouseCapture)?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
@@ -823,6 +840,12 @@ fn event_loop(
         terminal.draw(|f| draw(f, app, list_state, &textarea))?;
 
         match event::read()? {
+            Event::Paste(text) => {
+                if app.editing {
+                    textarea.insert_str(&text);
+                }
+                continue;
+            }
             Event::Mouse(mouse) => {
                 match mouse.kind {
                     crossterm::event::MouseEventKind::ScrollDown => {
