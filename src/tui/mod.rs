@@ -100,6 +100,7 @@ pub struct App {
     pub filtered: Vec<usize>,
     pub selected: usize,
     pub active_panel: Panel,
+    pub focused_panel: Panel,
     pub output: String,
     pub solved_count: usize,
     pub language: String,
@@ -122,6 +123,7 @@ impl App {
             filtered: vec![],
             selected: 0,
             active_panel: Panel::List,
+            focused_panel: Panel::Code,
             output: String::new(),
             solved_count: 0,
             language: "python3".to_string(),
@@ -171,8 +173,8 @@ impl App {
 
 // ── Syntax highlighting ───────────────────────────────────────────────────────
 
-fn highlight_code(code: &str, lang: &str) -> Vec<Line<'static>> {
-    let keywords: &[&str] = match lang {
+fn keywords_for_lang(lang: &str) -> &'static [&'static str] {
+    match lang {
         "python3" | "python" => &[
             "def", "class", "return", "if", "elif", "else", "for", "while", "in", "and", "or",
             "not", "import", "from", "pass", "break", "continue", "lambda", "with", "as", "try",
@@ -190,7 +192,11 @@ fn highlight_code(code: &str, lang: &str) -> Vec<Line<'static>> {
             "null", "undefined", "true", "false",
         ],
         _ => &[],
-    };
+    }
+}
+
+fn highlight_code(code: &str, lang: &str) -> Vec<Line<'static>> {
+    let keywords = keywords_for_lang(lang);
 
     code.lines()
         .map(|line| {
@@ -258,6 +264,76 @@ fn tokenize_spans(line: &str, keywords: &[&str]) -> Vec<Span<'static>> {
     }
 
     spans
+}
+
+fn inject_cursor(spans: Vec<Span<'static>>, col: usize) -> Vec<Span<'static>> {
+    let cursor_style = Style::default().bg(Color::White).fg(Color::Black);
+    let mut result = Vec::new();
+    let mut total = 0usize;
+    let mut placed = false;
+
+    for span in spans {
+        let span_chars: Vec<char> = span.content.chars().collect();
+        let span_len = span_chars.len();
+
+        if !placed && col >= total && col < total + span_len {
+            let local = col - total;
+            if local > 0 {
+                result.push(Span::styled(
+                    span_chars[..local].iter().collect::<String>(),
+                    span.style,
+                ));
+            }
+            result.push(Span::styled(span_chars[local].to_string(), cursor_style));
+            if local + 1 < span_len {
+                result.push(Span::styled(
+                    span_chars[local + 1..].iter().collect::<String>(),
+                    span.style,
+                ));
+            }
+            placed = true;
+        } else {
+            result.push(span);
+        }
+        total += span_len;
+    }
+    if !placed {
+        result.push(Span::styled(" ", cursor_style));
+    }
+    result
+}
+
+fn tokenize_line_for_editor(
+    line: &str,
+    keywords: &[&str],
+    lang: &str,
+    cursor_col: Option<usize>,
+) -> Line<'static> {
+    let comment_start = match lang {
+        "python3" | "python" => line.find('#'),
+        "rust" | "javascript" | "typescript" | "cpp" | "java" | "go" => line.find("//"),
+        _ => None,
+    };
+
+    let spans = if let Some(pos) = comment_start {
+        let (code_part, comment_part) = line.split_at(pos);
+        let mut s = tokenize_spans(code_part, keywords);
+        s.push(Span::styled(
+            comment_part.to_string(),
+            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+        ));
+        s
+    } else {
+        tokenize_spans(line, keywords)
+    };
+
+    let spans = if let Some(col) = cursor_col {
+        inject_cursor(spans, col)
+    } else {
+        spans
+    };
+
+    Line::from(spans)
 }
 
 // ── Drawing ───────────────────────────────────────────────────────────────────
@@ -400,7 +476,7 @@ fn draw_problem_sections(f: &mut Frame, area: Rect, app: &App, textarea: &tui_te
     };
 
     if !app.desc_collapsed {
-        draw_desc_section(f, cols[0], app);
+        draw_desc_section(f, cols[0], app, app.focused_panel == Panel::Description);
     }
 
     // Right column: code (top 75%) + output (bottom 25%)
@@ -414,11 +490,11 @@ fn draw_problem_sections(f: &mut Frame, area: Rect, app: &App, textarea: &tui_te
         .constraints([Constraint::Min(0), output_constraint])
         .split(cols[1]);
 
-    draw_code_section(f, right_rows[0], app, textarea);
-    draw_output_section(f, right_rows[1], app);
+    draw_code_section(f, right_rows[0], app, textarea, app.focused_panel == Panel::Code);
+    draw_output_section(f, right_rows[1], app, app.focused_panel == Panel::Output);
 }
 
-fn draw_desc_section(f: &mut Frame, area: Rect, app: &App) {
+fn draw_desc_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
     if app.desc_collapsed {
         f.render_widget(
             Paragraph::new(Line::from(vec![
@@ -434,12 +510,19 @@ fn draw_desc_section(f: &mut Frame, area: Rect, app: &App) {
             .map(|p| p.description.as_str())
             .unwrap_or("Select a problem and press Enter to load it.");
 
+        let border_style = if focused {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default()
+        };
+
         f.render_widget(
             Paragraph::new(content)
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(" [P] Description "),
+                        .title(" [P] Description ")
+                        .border_style(border_style),
                 )
                 .wrap(Wrap { trim: false })
                 .scroll((app.desc_scroll, 0)),
@@ -448,7 +531,13 @@ fn draw_desc_section(f: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-fn draw_code_section(f: &mut Frame, area: Rect, app: &App, textarea: &tui_textarea::TextArea) {
+fn draw_code_section(
+    f: &mut Frame,
+    area: Rect,
+    app: &App,
+    textarea: &tui_textarea::TextArea,
+    focused: bool,
+) {
     let lang_label = if app.editing {
         format!(" \u{270f} Code \u{2014} {} \u{2014} (Esc to save) ", app.language)
     } else {
@@ -456,21 +545,63 @@ fn draw_code_section(f: &mut Frame, area: Rect, app: &App, textarea: &tui_textar
     };
 
     if app.editing {
+        let border_style = Style::default().fg(Color::Yellow);
         let block = Block::default()
             .borders(Borders::ALL)
             .title(lang_label)
-            .border_style(Style::default().fg(Color::Yellow));
+            .border_style(border_style);
         let inner = block.inner(area);
         f.render_widget(block, area);
-        f.render_widget(&*textarea, inner);
+
+        // Build syntax-highlighted lines with cursor injected
+        let lines = textarea.lines();
+        let (cursor_row, cursor_col) = textarea.cursor();
+        let keywords = keywords_for_lang(&app.language);
+        let lang = app.language.as_str();
+
+        let highlighted: Vec<Line<'static>> = lines
+            .iter()
+            .enumerate()
+            .map(|(row, line)| {
+                let col = if row == cursor_row { Some(cursor_col) } else { None };
+                tokenize_line_for_editor(line, keywords, lang, col)
+            })
+            .collect();
+
+        let visible = inner.height.saturating_sub(0) as usize;
+        let scroll_row = if cursor_row >= app.code_scroll as usize + visible {
+            (cursor_row + 1).saturating_sub(visible) as u16
+        } else if cursor_row < app.code_scroll as usize {
+            cursor_row as u16
+        } else {
+            app.code_scroll
+        };
+
+        f.render_widget(
+            Paragraph::new(highlighted)
+                .wrap(Wrap { trim: false })
+                .scroll((scroll_row, 0)),
+            inner,
+        );
     } else {
+        let border_style = if focused {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default()
+        };
+
         let highlighted = highlight_code(
             app.selected_problem().map(|p| p.code.as_str()).unwrap_or("# Select a problem and press Enter"),
             &app.language,
         );
         f.render_widget(
             Paragraph::new(highlighted)
-                .block(Block::default().borders(Borders::ALL).title(lang_label))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(lang_label)
+                        .border_style(border_style),
+                )
                 .wrap(Wrap { trim: false })
                 .scroll((app.code_scroll, 0)),
             area,
@@ -478,7 +609,7 @@ fn draw_code_section(f: &mut Frame, area: Rect, app: &App, textarea: &tui_textar
     }
 }
 
-fn draw_output_section(f: &mut Frame, area: Rect, app: &App) {
+fn draw_output_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
     if app.output_collapsed {
         f.render_widget(
             Paragraph::new(Line::from(vec![
@@ -497,12 +628,19 @@ fn draw_output_section(f: &mut Frame, area: Rect, app: &App) {
             Style::default()
         };
 
+        let border_style = if focused {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default()
+        };
+
         f.render_widget(
             Paragraph::new(app.output.as_str())
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(" [O] Output "),
+                        .title(" [O] Output ")
+                        .border_style(border_style),
                 )
                 .style(output_style)
                 .wrap(Wrap { trim: false })
@@ -517,7 +655,7 @@ fn draw_problem_status(f: &mut Frame, area: Rect, app: &App) {
         " [Esc]save+exit edit mode".to_string()
     } else {
         format!(
-            " [b]back  [e]edit  [r]run  [s]submit  [l]lang:{}  [p]desc  [o]output  [d]disguise  [q]quit",
+            " [b]back  [e]edit  [r]run  [s]submit  [l]lang:{}  [p]desc  [o]output  [Tab]focus  [d]disguise  [q]quit",
             app.language,
         )
     };
@@ -586,6 +724,16 @@ fn handle_key_problem(app: &mut App, key: KeyCode) -> Action {
         KeyCode::Char('d') => Action::Exit(ExitReason::SwitchToDisguise),
         KeyCode::Char('e') => Action::EnterEditMode,
 
+        KeyCode::Tab => {
+            app.focused_panel = match app.focused_panel {
+                Panel::Code => Panel::Output,
+                Panel::Output => Panel::Description,
+                Panel::Description => Panel::Code,
+                Panel::List => Panel::Code,
+            };
+            Action::None
+        }
+
         KeyCode::Char('b') => {
             app.page = Page::List;
             Action::None
@@ -618,12 +766,22 @@ fn handle_key_problem(app: &mut App, key: KeyCode) -> Action {
         }
 
         KeyCode::Char('j') | KeyCode::Down => {
-            app.desc_scroll = app.desc_scroll.saturating_add(1);
+            match app.focused_panel {
+                Panel::Description => { app.desc_scroll = app.desc_scroll.saturating_add(1); }
+                Panel::Code => { app.code_scroll = app.code_scroll.saturating_add(1); }
+                Panel::Output => { app.output_scroll = app.output_scroll.saturating_add(1); }
+                Panel::List => { app.desc_scroll = app.desc_scroll.saturating_add(1); }
+            }
             Action::None
         }
 
         KeyCode::Char('k') | KeyCode::Up => {
-            app.desc_scroll = app.desc_scroll.saturating_sub(1);
+            match app.focused_panel {
+                Panel::Description => { app.desc_scroll = app.desc_scroll.saturating_sub(1); }
+                Panel::Code => { app.code_scroll = app.code_scroll.saturating_sub(1); }
+                Panel::Output => { app.output_scroll = app.output_scroll.saturating_sub(1); }
+                Panel::List => { app.desc_scroll = app.desc_scroll.saturating_sub(1); }
+            }
             Action::None
         }
 
@@ -637,6 +795,7 @@ pub async fn run(app: &mut App) -> Result<ExitReason, Box<dyn std::error::Error>
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, crossterm::event::EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -646,6 +805,7 @@ pub async fn run(app: &mut App) -> Result<ExitReason, Box<dyn std::error::Error>
     let reason = event_loop(&mut terminal, app, &mut list_state)?;
 
     disable_raw_mode()?;
+    execute!(terminal.backend_mut(), crossterm::event::DisableMouseCapture)?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     Ok(reason)
@@ -662,156 +822,181 @@ fn event_loop(
         list_state.select(Some(app.selected));
         terminal.draw(|f| draw(f, app, list_state, &textarea))?;
 
-        if let Event::Key(key) = event::read()? {
-            if key.kind != KeyEventKind::Press {
-                continue;
-            }
-
-            // When in edit mode, intercept ALL key events
-            if app.editing {
-                if key.code == KeyCode::Esc {
-                    let new_code = textarea.lines().join("\n");
-                    if let Some(p) = app.selected_problem_mut() {
-                        p.code = new_code;
+        match event::read()? {
+            Event::Mouse(mouse) => {
+                match mouse.kind {
+                    crossterm::event::MouseEventKind::ScrollDown => {
+                        match app.focused_panel {
+                            Panel::Description => app.desc_scroll = app.desc_scroll.saturating_add(3),
+                            Panel::Code => app.code_scroll = app.code_scroll.saturating_add(3),
+                            Panel::Output => app.output_scroll = app.output_scroll.saturating_add(3),
+                            Panel::List => {}
+                        }
                     }
-                    app.editing = false;
-                } else {
-                    textarea.input(tui_textarea::Input::from(key));
+                    crossterm::event::MouseEventKind::ScrollUp => {
+                        match app.focused_panel {
+                            Panel::Description => app.desc_scroll = app.desc_scroll.saturating_sub(3),
+                            Panel::Code => app.code_scroll = app.code_scroll.saturating_sub(3),
+                            Panel::Output => app.output_scroll = app.output_scroll.saturating_sub(3),
+                            Panel::List => {}
+                        }
+                    }
+                    _ => {}
                 }
                 continue;
             }
-
-            match handle_key(app, key.code) {
-                Action::None => {}
-
-                Action::EnterEditMode => {
-                    let lines: Vec<String> = app
-                        .selected_problem()
-                        .map(|p| p.code.lines().map(str::to_string).collect())
-                        .unwrap_or_default();
-                    textarea = tui_textarea::TextArea::new(lines);
-                    textarea.set_line_number_style(
-                        Style::default().fg(Color::DarkGray),
-                    );
-                    app.editing = true;
+            Event::Key(key) => {
+                if key.kind != KeyEventKind::Press {
+                    continue;
                 }
 
-                Action::Exit(reason) => return Ok(reason),
+                // When in edit mode, intercept ALL key events
+                if app.editing {
+                    if key.code == KeyCode::Esc {
+                        let new_code = textarea.lines().join("\n");
+                        if let Some(p) = app.selected_problem_mut() {
+                            p.code = new_code;
+                        }
+                        app.editing = false;
+                    } else {
+                        textarea.input(tui_textarea::Input::from(key));
+                    }
+                    continue;
+                }
 
-                Action::LoadProblem => {
-                    if let Some(slug) = app.selected_problem().map(|p| p.slug.clone()) {
-                        if let Some(client) = app.client.clone() {
-                            app.output = "Loading\u{2026}".to_string();
+                match handle_key(app, key.code) {
+                    Action::None => {}
+
+                    Action::EnterEditMode => {
+                        let lines: Vec<String> = app
+                            .selected_problem()
+                            .map(|p| p.code.lines().map(str::to_string).collect())
+                            .unwrap_or_default();
+                        textarea = tui_textarea::TextArea::new(lines);
+                        textarea.set_line_number_style(
+                            Style::default().fg(Color::DarkGray),
+                        );
+                        app.editing = true;
+                    }
+
+                    Action::Exit(reason) => return Ok(reason),
+
+                    Action::LoadProblem => {
+                        if let Some(slug) = app.selected_problem().map(|p| p.slug.clone()) {
+                            if let Some(client) = app.client.clone() {
+                                app.output = "Loading\u{2026}".to_string();
+                                terminal.draw(|f| draw(f, app, list_state, &textarea))?;
+                                match tokio::task::block_in_place(|| {
+                                    tokio::runtime::Handle::current().block_on(client.get_problem(&slug))
+                                }) {
+                                    Ok(detail) => {
+                                        let lang = app.language.clone();
+                                        if let Some(p) = app.selected_problem_mut() {
+                                            p.id = detail.id;
+                                            p.description = detail.description;
+                                            p.starter_code = detail.starter_code;
+                                            p.test_cases = detail.examples.join("\n");
+                                            p.code = p.starter_code.get(&lang)
+                                                .or_else(|| p.starter_code.get("python3"))
+                                                .cloned()
+                                                .unwrap_or_default();
+                                        }
+                                        app.desc_scroll = 0;
+                                        app.output = "Problem loaded.".to_string();
+                                        app.page = Page::Problem;
+                                    }
+                                    Err(e) => {
+                                        app.output = format!("Error: {e}");
+                                    }
+                                }
+                            } else {
+                                app.output = "No API session \u{2014} start with --session and --csrf".to_string();
+                            }
+                        }
+                    }
+
+                    Action::RunTests => {
+                        if let (Some(p), Some(client)) = (
+                            app.selected_problem().map(|p| (p.slug.clone(), p.code.clone(), p.id.to_string(), p.test_cases.clone())),
+                            app.client.clone(),
+                        ) {
+                            let (slug, code, qid, test_cases) = p;
+                            if code.trim().is_empty() {
+                                app.output = "No code \u{2014} press Enter on the problem to load it first.".to_string();
+                                continue;
+                            }
+                            let lang = app.language.clone();
+                            app.output = "Running tests\u{2026}".to_string();
                             terminal.draw(|f| draw(f, app, list_state, &textarea))?;
                             match tokio::task::block_in_place(|| {
-                                tokio::runtime::Handle::current().block_on(client.get_problem(&slug))
+                                tokio::runtime::Handle::current().block_on(
+                                    client.run_tests(&slug, &code, &lang, &test_cases, &qid)
+                                )
                             }) {
-                                Ok(detail) => {
-                                    let lang = app.language.clone();
-                                    if let Some(p) = app.selected_problem_mut() {
-                                        p.id = detail.id;
-                                        p.description = detail.description;
-                                        p.starter_code = detail.starter_code;
-                                        p.test_cases = detail.examples.join("\n");
-                                        p.code = p.starter_code.get(&lang)
-                                            .or_else(|| p.starter_code.get("python3"))
-                                            .cloned()
-                                            .unwrap_or_default();
+                                Ok(r) => {
+                                    let mut out = format!(
+                                        "Status: {}\nPassed: {}/{}\nRuntime: {}ms  Memory: {}MB",
+                                        r.status,
+                                        r.passed, r.total,
+                                        r.runtime_ms.map_or("?".into(), |v| v.to_string()),
+                                        r.memory_mb.map_or("?".into(), |v| format!("{:.1}", v)),
+                                    );
+                                    if let Some(detail) = r.error_detail {
+                                        out.push('\n');
+                                        out.push_str(&detail);
                                     }
-                                    app.desc_scroll = 0;
-                                    app.output = "Problem loaded.".to_string();
-                                    app.page = Page::Problem;
+                                    app.output = out;
                                 }
-                                Err(e) => {
-                                    app.output = format!("Error: {e}");
-                                }
+                                Err(e) => { app.output = format!("Error: {e}"); }
                             }
                         } else {
-                            app.output = "No API session \u{2014} start with --session and --csrf".to_string();
+                            app.output = "No API session or no problem selected.".to_string();
                         }
                     }
-                }
 
-                Action::RunTests => {
-                    if let (Some(p), Some(client)) = (
-                        app.selected_problem().map(|p| (p.slug.clone(), p.code.clone(), p.id.to_string(), p.test_cases.clone())),
-                        app.client.clone(),
-                    ) {
-                        let (slug, code, qid, test_cases) = p;
-                        if code.trim().is_empty() {
-                            app.output = "No code \u{2014} press Enter on the problem to load it first.".to_string();
-                            continue;
-                        }
-                        let lang = app.language.clone();
-                        app.output = "Running tests\u{2026}".to_string();
-                        terminal.draw(|f| draw(f, app, list_state, &textarea))?;
-                        match tokio::task::block_in_place(|| {
-                            tokio::runtime::Handle::current().block_on(
-                                client.run_tests(&slug, &code, &lang, &test_cases, &qid)
-                            )
-                        }) {
-                            Ok(r) => {
-                                let mut out = format!(
-                                    "Status: {}\nPassed: {}/{}\nRuntime: {}ms  Memory: {}MB",
-                                    r.status,
-                                    r.passed, r.total,
-                                    r.runtime_ms.map_or("?".into(), |v| v.to_string()),
-                                    r.memory_mb.map_or("?".into(), |v| format!("{:.1}", v)),
-                                );
-                                if let Some(detail) = r.error_detail {
-                                    out.push('\n');
-                                    out.push_str(&detail);
-                                }
-                                app.output = out;
+                    Action::Submit => {
+                        if let (Some(p), Some(client)) = (
+                            app.selected_problem().map(|p| (p.slug.clone(), p.code.clone(), p.id.to_string())),
+                            app.client.clone(),
+                        ) {
+                            let (slug, code, qid) = p;
+                            if code.trim().is_empty() {
+                                app.output = "No code \u{2014} press Enter on the problem to load it first.".to_string();
+                                continue;
                             }
-                            Err(e) => { app.output = format!("Error: {e}"); }
-                        }
-                    } else {
-                        app.output = "No API session or no problem selected.".to_string();
-                    }
-                }
-
-                Action::Submit => {
-                    if let (Some(p), Some(client)) = (
-                        app.selected_problem().map(|p| (p.slug.clone(), p.code.clone(), p.id.to_string())),
-                        app.client.clone(),
-                    ) {
-                        let (slug, code, qid) = p;
-                        if code.trim().is_empty() {
-                            app.output = "No code \u{2014} press Enter on the problem to load it first.".to_string();
-                            continue;
-                        }
-                        let lang = app.language.clone();
-                        app.output = "Submitting\u{2026}".to_string();
-                        terminal.draw(|f| draw(f, app, list_state, &textarea))?;
-                        match tokio::task::block_in_place(|| {
-                            tokio::runtime::Handle::current().block_on(
-                                client.submit(&slug, &code, &lang, &qid)
-                            )
-                        }) {
-                            Ok(r) => {
-                                let accepted = r.status == "Accepted";
-                                if accepted {
-                                    if let Some(&i) = app.filtered.get(app.selected) {
-                                        app.problems[i].solved = true;
-                                        app.solved_count = app.problems.iter().filter(|p| p.solved).count();
+                            let lang = app.language.clone();
+                            app.output = "Submitting\u{2026}".to_string();
+                            terminal.draw(|f| draw(f, app, list_state, &textarea))?;
+                            match tokio::task::block_in_place(|| {
+                                tokio::runtime::Handle::current().block_on(
+                                    client.submit(&slug, &code, &lang, &qid)
+                                )
+                            }) {
+                                Ok(r) => {
+                                    let accepted = r.status == "Accepted";
+                                    if accepted {
+                                        if let Some(&i) = app.filtered.get(app.selected) {
+                                            app.problems[i].solved = true;
+                                            app.solved_count = app.problems.iter().filter(|p| p.solved).count();
+                                        }
                                     }
+                                    app.output = format!(
+                                        "Status: {}\nPassed: {}/{}\nRuntime: {}ms  Memory: {}MB",
+                                        r.status,
+                                        r.passed, r.total,
+                                        r.runtime_ms.map_or("?".into(), |v| v.to_string()),
+                                        r.memory_mb.map_or("?".into(), |v| format!("{:.1}", v)),
+                                    );
                                 }
-                                app.output = format!(
-                                    "Status: {}\nPassed: {}/{}\nRuntime: {}ms  Memory: {}MB",
-                                    r.status,
-                                    r.passed, r.total,
-                                    r.runtime_ms.map_or("?".into(), |v| v.to_string()),
-                                    r.memory_mb.map_or("?".into(), |v| format!("{:.1}", v)),
-                                );
+                                Err(e) => { app.output = format!("Error: {e}"); }
                             }
-                            Err(e) => { app.output = format!("Error: {e}"); }
+                        } else {
+                            app.output = "No API session or no problem selected.".to_string();
                         }
-                    } else {
-                        app.output = "No API session or no problem selected.".to_string();
                     }
                 }
             }
+            _ => {}
         }
     }
 }
