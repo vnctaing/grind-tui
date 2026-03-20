@@ -13,7 +13,7 @@ use ratatui::{
 };
 use std::io;
 
-// ── Shared types (also used by disguise module) ───────────────────────────────
+// ── Shared types ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Difficulty {
@@ -91,7 +91,7 @@ enum Action {
     LoadProblem,
     RunTests,
     Submit,
-    OpenEditor,
+    EnterEditMode,
     OpenCursor,
     SyncCursor,
     None,
@@ -115,6 +115,7 @@ pub struct App {
     pub page: Page,
     pub desc_collapsed: bool,
     pub output_collapsed: bool,
+    pub editing: bool,
     pub cursor_file: Option<String>,
     pub cursor_file_mtime: Option<std::time::SystemTime>,
 }
@@ -139,6 +140,7 @@ impl App {
             page: Page::List,
             desc_collapsed: false,
             output_collapsed: false,
+            editing: false,
             cursor_file: None,
             cursor_file_mtime: None,
         }
@@ -175,7 +177,7 @@ impl App {
     }
 }
 
-// ── Editor helpers ────────────────────────────────────────────────────────────
+// ── Cursor file helpers ───────────────────────────────────────────────────────
 
 fn ext_for_lang(lang: &str) -> &'static str {
     match lang {
@@ -189,10 +191,6 @@ fn ext_for_lang(lang: &str) -> &'static str {
         "c" => "c",
         _ => "txt",
     }
-}
-
-fn editor_cmd() -> String {
-    std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string())
 }
 
 fn temp_file_path(slug: &str, lang: &str) -> String {
@@ -231,7 +229,6 @@ fn keywords_for_lang(lang: &str) -> &'static [&'static str] {
 
 fn highlight_code(code: &str, lang: &str) -> Vec<Line<'static>> {
     let keywords = keywords_for_lang(lang);
-
     code.lines()
         .map(|line| {
             let comment_start = match lang {
@@ -239,15 +236,12 @@ fn highlight_code(code: &str, lang: &str) -> Vec<Line<'static>> {
                 "rust" | "javascript" | "typescript" | "cpp" | "java" | "go" => line.find("//"),
                 _ => None,
             };
-
             if let Some(pos) = comment_start {
                 let (code_part, comment_part) = line.split_at(pos);
                 let mut spans = tokenize_spans(code_part, keywords);
                 spans.push(Span::styled(
                     comment_part.to_string(),
-                    Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::ITALIC),
+                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
                 ));
                 Line::from(spans)
             } else {
@@ -267,49 +261,84 @@ fn tokenize_spans(line: &str, keywords: &[&str]) -> Vec<Span<'static>> {
         } else {
             if !current.is_empty() {
                 let word = current.clone();
-                if keywords.contains(&word.as_str()) {
-                    spans.push(Span::styled(
-                        word,
-                        Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
-                    ));
-                } else if word.chars().next().map(|c| c.is_numeric()).unwrap_or(false) {
-                    spans.push(Span::styled(word, Style::default().fg(Color::Cyan)));
-                } else {
-                    spans.push(Span::raw(word));
-                }
+                spans.push(make_word_span(word, keywords));
                 current.clear();
             }
             spans.push(Span::raw(ch.to_string()));
         }
     }
-
     if !current.is_empty() {
-        let word = current.clone();
-        if keywords.contains(&word.as_str()) {
-            spans.push(Span::styled(
-                word,
-                Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
-            ));
-        } else if word.chars().next().map(|c| c.is_numeric()).unwrap_or(false) {
-            spans.push(Span::styled(word, Style::default().fg(Color::Cyan)));
-        } else {
-            spans.push(Span::raw(word));
-        }
+        spans.push(make_word_span(current, keywords));
     }
-
     spans
+}
+
+fn make_word_span(word: String, keywords: &[&str]) -> Span<'static> {
+    if keywords.contains(&word.as_str()) {
+        Span::styled(word, Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
+    } else if word.chars().next().map(|c| c.is_numeric()).unwrap_or(false) {
+        Span::styled(word, Style::default().fg(Color::Cyan))
+    } else {
+        Span::raw(word)
+    }
+}
+
+fn inject_cursor(spans: Vec<Span<'static>>, col: usize) -> Vec<Span<'static>> {
+    let cursor_style = Style::default().bg(Color::White).fg(Color::Black);
+    let mut result = Vec::new();
+    let mut total = 0usize;
+    let mut placed = false;
+
+    for span in spans {
+        let chars: Vec<char> = span.content.chars().collect();
+        let len = chars.len();
+        if !placed && col >= total && col < total + len {
+            let local = col - total;
+            if local > 0 {
+                result.push(Span::styled(chars[..local].iter().collect::<String>(), span.style));
+            }
+            result.push(Span::styled(chars[local].to_string(), cursor_style));
+            if local + 1 < len {
+                result.push(Span::styled(chars[local + 1..].iter().collect::<String>(), span.style));
+            }
+            placed = true;
+        } else {
+            result.push(span);
+        }
+        total += len;
+    }
+    if !placed {
+        result.push(Span::styled(" ", cursor_style));
+    }
+    result
+}
+
+fn tokenize_line_for_editor(line: &str, keywords: &[&str], lang: &str, cursor_col: Option<usize>) -> Line<'static> {
+    let comment_start = match lang {
+        "python3" | "python" => line.find('#'),
+        "rust" | "javascript" | "typescript" | "cpp" | "java" | "go" => line.find("//"),
+        _ => None,
+    };
+    let spans = if let Some(pos) = comment_start {
+        let (code_part, comment_part) = line.split_at(pos);
+        let mut s = tokenize_spans(code_part, keywords);
+        s.push(Span::styled(comment_part.to_string(), Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)));
+        s
+    } else {
+        tokenize_spans(line, keywords)
+    };
+    let spans = if let Some(col) = cursor_col { inject_cursor(spans, col) } else { spans };
+    Line::from(spans)
 }
 
 // ── Drawing ───────────────────────────────────────────────────────────────────
 
-fn draw(f: &mut Frame, app: &App, list_state: &mut ListState) {
+fn draw(f: &mut Frame, app: &App, list_state: &mut ListState, textarea: &tui_textarea::TextArea) {
     match app.page {
         Page::List => draw_list_page(f, app, list_state),
-        Page::Problem => draw_problem_page(f, app),
+        Page::Problem => draw_problem_page(f, app, textarea),
     }
 }
-
-// ── Page 1: Problem List ──────────────────────────────────────────────────────
 
 fn draw_list_page(f: &mut Frame, app: &App, list_state: &mut ListState) {
     let area = f.area();
@@ -317,7 +346,6 @@ fn draw_list_page(f: &mut Frame, app: &App, list_state: &mut ListState) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(1)])
         .split(area);
-
     draw_list_full(f, chunks[0], app, list_state);
     draw_list_status(f, chunks[1], app);
 }
@@ -328,7 +356,6 @@ fn draw_list_full(f: &mut Frame, area: Rect, app: &App, list_state: &mut ListSta
         .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(area);
 
-    // Search bar
     let search_text = if app.searching {
         format!("/{}_", app.search_query)
     } else if !app.search_query.is_empty() {
@@ -336,93 +363,70 @@ fn draw_list_full(f: &mut Frame, area: Rect, app: &App, list_state: &mut ListSta
     } else {
         " /  (press / to search)".to_string()
     };
-    let search = Paragraph::new(search_text)
-        .style(if app.searching {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        })
-        .block(Block::default().borders(Borders::ALL).title(" Search "));
-    f.render_widget(search, rows[0]);
+    f.render_widget(
+        Paragraph::new(search_text)
+            .style(if app.searching { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::DarkGray) })
+            .block(Block::default().borders(Borders::ALL).title(" Search ")),
+        rows[0],
+    );
 
-    // Problem table
-    let items: Vec<ListItem> = app
-        .filtered
-        .iter()
-        .map(|&i| {
-            let p = &app.problems[i];
-            let check = if p.solved { "✓" } else { " " };
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!("{:>4}", p.id),
-                    Style::default().fg(Color::DarkGray),
-                ),
-                Span::raw("  "),
-                Span::styled(check, Style::default().fg(Color::Green)),
-                Span::raw("  "),
-                Span::raw(format!("{:<30}", truncate(&p.title, 30))),
-                Span::raw("  "),
-                Span::styled(
-                    format!("{:<8}", p.difficulty.label()),
-                    Style::default().fg(p.difficulty.color()),
-                ),
-            ]))
-        })
-        .collect();
+    let items: Vec<ListItem> = app.filtered.iter().map(|&i| {
+        let p = &app.problems[i];
+        let check = if p.solved { "✓" } else { " " };
+        ListItem::new(Line::from(vec![
+            Span::styled(format!("{:>4}", p.id), Style::default().fg(Color::DarkGray)),
+            Span::raw("  "),
+            Span::styled(check, Style::default().fg(Color::Green)),
+            Span::raw("  "),
+            Span::raw(format!("{:<30}", truncate(&p.title, 30))),
+            Span::raw("  "),
+            Span::styled(format!("{:<8}", p.difficulty.label()), Style::default().fg(p.difficulty.color())),
+        ]))
+    }).collect();
 
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!(" #    ✓  Title                           Difficulty  │ {} problems ", app.filtered.len())),
-        )
-        .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD))
-        .highlight_symbol("▶ ");
-
-    f.render_stateful_widget(list, rows[1], list_state);
+    f.render_stateful_widget(
+        List::new(items)
+            .block(Block::default().borders(Borders::ALL)
+                .title(format!(" #    ✓  Title                           Difficulty  │ {} problems ", app.filtered.len())))
+            .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD))
+            .highlight_symbol("▶ "),
+        rows[1],
+        list_state,
+    );
 }
 
 fn draw_list_status(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(
         Paragraph::new(format!(
             " [/]search  [Enter]open  [d]disguise  [q]quit  │  Problems: {}  Solved: {}",
-            app.filtered.len(),
-            app.solved_count,
-        ))
-        .style(Style::default().bg(Color::DarkGray).fg(Color::White)),
+            app.filtered.len(), app.solved_count,
+        )).style(Style::default().bg(Color::DarkGray).fg(Color::White)),
         area,
     );
 }
 
-// ── Page 2: Problem Detail ────────────────────────────────────────────────────
-
-fn draw_problem_page(f: &mut Frame, app: &App) {
+fn draw_problem_page(f: &mut Frame, app: &App, textarea: &tui_textarea::TextArea) {
     let area = f.area();
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)])
         .split(area);
-
     draw_problem_title(f, outer[0], app);
-    draw_problem_sections(f, outer[1], app);
+    draw_problem_sections(f, outer[1], app, textarea);
     draw_problem_status(f, outer[2], app);
 }
 
 fn draw_problem_title(f: &mut Frame, area: Rect, app: &App) {
-    let title = app
-        .selected_problem()
+    let title = app.selected_problem()
         .map(|p| format!(" {} . {} [{}] ", p.id, p.title, p.difficulty.label()))
         .unwrap_or_else(|| " Problem ".to_string());
-
-    let title_style = app
-        .selected_problem()
+    let style = app.selected_problem()
         .map(|p| Style::default().fg(p.difficulty.color()).add_modifier(Modifier::BOLD))
         .unwrap_or_else(|| Style::default().add_modifier(Modifier::BOLD));
-
-    f.render_widget(Paragraph::new(title).style(title_style), area);
+    f.render_widget(Paragraph::new(title).style(style), area);
 }
 
-fn draw_problem_sections(f: &mut Frame, area: Rect, app: &App) {
+fn draw_problem_sections(f: &mut Frame, area: Rect, app: &App, textarea: &tui_textarea::TextArea) {
     let cols = if app.desc_collapsed {
         Layout::default()
             .direction(Direction::Horizontal)
@@ -439,97 +443,104 @@ fn draw_problem_sections(f: &mut Frame, area: Rect, app: &App) {
         draw_desc_section(f, cols[0], app, app.focused_panel == Panel::Description);
     }
 
-    let output_constraint = if app.output_collapsed {
-        Constraint::Length(1)
-    } else {
-        Constraint::Percentage(25)
-    };
+    let output_constraint = if app.output_collapsed { Constraint::Length(1) } else { Constraint::Percentage(25) };
     let right_rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), output_constraint])
         .split(cols[1]);
 
-    draw_code_section(f, right_rows[0], app, app.focused_panel == Panel::Code);
+    draw_code_section(f, right_rows[0], app, textarea, app.focused_panel == Panel::Code);
     draw_output_section(f, right_rows[1], app, app.focused_panel == Panel::Output);
 }
 
 fn draw_desc_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
-    if app.desc_collapsed {
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(" [P] Description ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-                Span::styled(" (collapsed — press p to expand)", Style::default().fg(Color::DarkGray)),
-            ]))
-            .style(Style::default().bg(Color::DarkGray)),
-            area,
-        );
-    } else {
-        let content = app
-            .selected_problem()
-            .map(|p| p.description.as_str())
-            .unwrap_or("Select a problem and press Enter to load it.");
-
-        let border_style = if focused {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default()
-        };
-
-        f.render_widget(
-            Paragraph::new(content)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(" [P] Description ")
-                        .border_style(border_style),
-                )
-                .wrap(Wrap { trim: false })
-                .scroll((app.desc_scroll, 0)),
-            area,
-        );
-    }
+    let content = app.selected_problem()
+        .map(|p| p.description.as_str())
+        .unwrap_or("Select a problem and press Enter to load it.");
+    let border_style = if focused { Style::default().fg(Color::Cyan) } else { Style::default() };
+    f.render_widget(
+        Paragraph::new(content)
+            .block(Block::default().borders(Borders::ALL).title(" [P] Description ").border_style(border_style))
+            .wrap(Wrap { trim: false })
+            .scroll((app.desc_scroll, 0)),
+        area,
+    );
 }
 
-fn draw_code_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
-    let editor = editor_cmd();
-    let cursor_hint = app.cursor_file.as_ref()
-        .map(|_| " [y]sync-cursor ".to_string())
-        .unwrap_or_default();
-    let lang_label = format!(" [e]{editor}  [C]cursor{}— {} ", cursor_hint, app.language);
+fn draw_code_section(
+    f: &mut Frame,
+    area: Rect,
+    app: &App,
+    textarea: &tui_textarea::TextArea,
+    focused: bool,
+) {
+    let cursor_hint = if app.cursor_file.is_some() { " auto-sync ON " } else { "" };
+    let lang_label = if app.editing {
+        format!(" ✎ editing — {} {}(Esc to save) ", app.language, cursor_hint)
+    } else {
+        format!(" [e]edit  [C]cursor {}— {} ", cursor_hint, app.language)
+    };
 
-    let border_style = if focused {
+    let border_style = if app.editing {
+        Style::default().fg(Color::Yellow)
+    } else if focused {
         Style::default().fg(Color::Cyan)
     } else {
         Style::default()
     };
 
-    let highlighted: Vec<Line<'static>> = highlight_code(
-        app.selected_problem().map(|p| p.code.as_str()).unwrap_or("# Select a problem and press Enter"),
-        &app.language,
-    )
-    .into_iter()
-    .enumerate()
-    .map(|(i, mut l)| {
-        l.spans.insert(0, Span::styled(
-            format!("{:>3} ", i + 1),
-            Style::default().fg(Color::DarkGray),
-        ));
-        l
-    })
-    .collect();
+    let block = Block::default().borders(Borders::ALL).title(lang_label).border_style(border_style);
 
-    f.render_widget(
-        Paragraph::new(highlighted)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(lang_label)
-                    .border_style(border_style),
-            )
-            .wrap(Wrap { trim: false })
-            .scroll((app.code_scroll, 0)),
-        area,
-    );
+    if app.editing {
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let lines = textarea.lines();
+        let (cursor_row, cursor_col) = textarea.cursor();
+        let keywords = keywords_for_lang(&app.language);
+        let lang = app.language.as_str();
+
+        let visible = inner.height as usize;
+        let scroll_row = if cursor_row >= app.code_scroll as usize + visible {
+            (cursor_row + 1).saturating_sub(visible) as u16
+        } else if cursor_row < app.code_scroll as usize {
+            cursor_row as u16
+        } else {
+            app.code_scroll
+        };
+
+        let highlighted: Vec<Line<'static>> = lines.iter().enumerate().map(|(row, line)| {
+            let col = if row == cursor_row { Some(cursor_col) } else { None };
+            let mut l = tokenize_line_for_editor(line, keywords, lang, col);
+            l.spans.insert(0, Span::styled(format!("{:>3} ", row + 1), Style::default().fg(Color::DarkGray)));
+            l
+        }).collect();
+
+        f.render_widget(
+            Paragraph::new(highlighted).wrap(Wrap { trim: false }).scroll((scroll_row, 0)),
+            inner,
+        );
+    } else {
+        let highlighted: Vec<Line<'static>> = highlight_code(
+            app.selected_problem().map(|p| p.code.as_str()).unwrap_or("# Select a problem and press Enter"),
+            &app.language,
+        )
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut l)| {
+            l.spans.insert(0, Span::styled(format!("{:>3} ", i + 1), Style::default().fg(Color::DarkGray)));
+            l
+        })
+        .collect();
+
+        f.render_widget(
+            Paragraph::new(highlighted)
+                .block(block)
+                .wrap(Wrap { trim: false })
+                .scroll((app.code_scroll, 0)),
+            area,
+        );
+    }
 }
 
 fn draw_output_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
@@ -538,47 +549,40 @@ fn draw_output_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
             Paragraph::new(Line::from(vec![
                 Span::styled(" [O] Output ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
                 Span::styled(" (collapsed — press o to expand)", Style::default().fg(Color::DarkGray)),
-            ]))
-            .style(Style::default().bg(Color::DarkGray)),
+            ])).style(Style::default().bg(Color::DarkGray)),
             area,
         );
-    } else {
-        let output_style = if app.output.contains("Accepted") || app.output.contains("passed") {
-            Style::default().fg(Color::Green)
-        } else if app.output.contains("Error") || app.output.contains("Wrong") {
-            Style::default().fg(Color::Red)
-        } else {
-            Style::default()
-        };
-
-        let border_style = if focused {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default()
-        };
-
-        f.render_widget(
-            Paragraph::new(app.output.as_str())
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(" [O] Output ")
-                        .border_style(border_style),
-                )
-                .style(output_style)
-                .wrap(Wrap { trim: false })
-                .scroll((app.output_scroll, 0)),
-            area,
-        );
+        return;
     }
+
+    let output_style = if app.output.contains("Accepted") || app.output.contains("passed") {
+        Style::default().fg(Color::Green)
+    } else if app.output.contains("Error") || app.output.contains("Wrong") {
+        Style::default().fg(Color::Red)
+    } else {
+        Style::default()
+    };
+    let border_style = if focused { Style::default().fg(Color::Cyan) } else { Style::default() };
+
+    f.render_widget(
+        Paragraph::new(app.output.as_str())
+            .block(Block::default().borders(Borders::ALL).title(" [O] Output ").border_style(border_style))
+            .style(output_style)
+            .wrap(Wrap { trim: false })
+            .scroll((app.output_scroll, 0)),
+        area,
+    );
 }
 
 fn draw_problem_status(f: &mut Frame, area: Rect, app: &App) {
-    let editor = editor_cmd();
-    let status = format!(
-        " [b]back  [e]{editor}  [C]cursor  [r]run  [s]submit  [l]lang:{}  [p]desc  [o]output  [Tab]focus  [d]disguise  [q]quit",
-        app.language,
-    );
+    let status = if app.editing {
+        " [Esc]save  [r]run  [s]submit".to_string()
+    } else {
+        format!(
+            " [b]back  [e]edit  [C]cursor  [r]run  [s]submit  [l]lang:{}  [p]desc  [o]output  [Tab]focus  [d]disguise  [q]quit",
+            app.language,
+        )
+    };
     f.render_widget(
         Paragraph::new(status).style(Style::default().bg(Color::DarkGray).fg(Color::White)),
         area,
@@ -605,34 +609,19 @@ fn handle_key_list(app: &mut App, key: KeyCode) -> Action {
         }
         return Action::None;
     }
-
     match key {
         KeyCode::Char('q') => Action::Exit(ExitReason::Quit),
         KeyCode::Char('d') => Action::Exit(ExitReason::SwitchToDisguise),
-
-        KeyCode::Char('/') => {
-            app.searching = true;
-            app.search_query.clear();
-            app.rebuild_filtered();
-            Action::None
-        }
-
+        KeyCode::Char('/') => { app.searching = true; app.search_query.clear(); app.rebuild_filtered(); Action::None }
         KeyCode::Enter => Action::LoadProblem,
-
         KeyCode::Char('j') | KeyCode::Down => {
-            if !app.filtered.is_empty() {
-                app.selected = (app.selected + 1).min(app.filtered.len() - 1);
-            }
+            if !app.filtered.is_empty() { app.selected = (app.selected + 1).min(app.filtered.len() - 1); }
             Action::None
         }
-
         KeyCode::Char('k') | KeyCode::Up => {
-            if app.selected > 0 {
-                app.selected -= 1;
-            }
+            if app.selected > 0 { app.selected -= 1; }
             Action::None
         }
-
         _ => Action::None,
     }
 }
@@ -641,7 +630,7 @@ fn handle_key_problem(app: &mut App, key: KeyCode) -> Action {
     match key {
         KeyCode::Char('q') => Action::Exit(ExitReason::Quit),
         KeyCode::Char('d') => Action::Exit(ExitReason::SwitchToDisguise),
-        KeyCode::Char('e') => Action::OpenEditor,
+        KeyCode::Char('e') => Action::EnterEditMode,
         KeyCode::Char('C') => Action::OpenCursor,
         KeyCode::Char('y') => Action::SyncCursor,
 
@@ -654,22 +643,9 @@ fn handle_key_problem(app: &mut App, key: KeyCode) -> Action {
             };
             Action::None
         }
-
-        KeyCode::Char('b') => {
-            app.page = Page::List;
-            Action::None
-        }
-
-        KeyCode::Char('p') => {
-            app.desc_collapsed = !app.desc_collapsed;
-            Action::None
-        }
-
-        KeyCode::Char('o') => {
-            app.output_collapsed = !app.output_collapsed;
-            Action::None
-        }
-
+        KeyCode::Char('b') => { app.page = Page::List; Action::None }
+        KeyCode::Char('p') => { app.desc_collapsed = !app.desc_collapsed; Action::None }
+        KeyCode::Char('o') => { app.output_collapsed = !app.output_collapsed; Action::None }
         KeyCode::Char('r') => Action::RunTests,
         KeyCode::Char('s') => Action::Submit,
 
@@ -688,24 +664,22 @@ fn handle_key_problem(app: &mut App, key: KeyCode) -> Action {
 
         KeyCode::Char('j') | KeyCode::Down => {
             match app.focused_panel {
-                Panel::Description => { app.desc_scroll = app.desc_scroll.saturating_add(1); }
-                Panel::Code => { app.code_scroll = app.code_scroll.saturating_add(1); }
-                Panel::Output => { app.output_scroll = app.output_scroll.saturating_add(1); }
-                Panel::List => { app.desc_scroll = app.desc_scroll.saturating_add(1); }
+                Panel::Description => app.desc_scroll = app.desc_scroll.saturating_add(1),
+                Panel::Code => app.code_scroll = app.code_scroll.saturating_add(1),
+                Panel::Output => app.output_scroll = app.output_scroll.saturating_add(1),
+                Panel::List => app.desc_scroll = app.desc_scroll.saturating_add(1),
             }
             Action::None
         }
-
         KeyCode::Char('k') | KeyCode::Up => {
             match app.focused_panel {
-                Panel::Description => { app.desc_scroll = app.desc_scroll.saturating_sub(1); }
-                Panel::Code => { app.code_scroll = app.code_scroll.saturating_sub(1); }
-                Panel::Output => { app.output_scroll = app.output_scroll.saturating_sub(1); }
-                Panel::List => { app.desc_scroll = app.desc_scroll.saturating_sub(1); }
+                Panel::Description => app.desc_scroll = app.desc_scroll.saturating_sub(1),
+                Panel::Code => app.code_scroll = app.code_scroll.saturating_sub(1),
+                Panel::Output => app.output_scroll = app.output_scroll.saturating_sub(1),
+                Panel::List => app.desc_scroll = app.desc_scroll.saturating_sub(1),
             }
             Action::None
         }
-
         _ => Action::None,
     }
 }
@@ -717,6 +691,7 @@ pub async fn run(app: &mut App) -> Result<ExitReason, Box<dyn std::error::Error>
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     execute!(stdout, crossterm::event::EnableMouseCapture)?;
+    execute!(stdout, crossterm::event::EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -726,26 +701,11 @@ pub async fn run(app: &mut App) -> Result<ExitReason, Box<dyn std::error::Error>
     let reason = event_loop(&mut terminal, app, &mut list_state)?;
 
     disable_raw_mode()?;
+    execute!(terminal.backend_mut(), crossterm::event::DisableBracketedPaste)?;
     execute!(terminal.backend_mut(), crossterm::event::DisableMouseCapture)?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     Ok(reason)
-}
-
-fn suspend_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), crossterm::event::DisableMouseCapture)?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
-    Ok(())
-}
-
-fn resume_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
-    execute!(terminal.backend_mut(), EnterAlternateScreen)?;
-    execute!(terminal.backend_mut(), crossterm::event::EnableMouseCapture)?;
-    enable_raw_mode()?;
-    terminal.clear()?;
-    Ok(())
 }
 
 fn event_loop(
@@ -753,11 +713,13 @@ fn event_loop(
     app: &mut App,
     list_state: &mut ListState,
 ) -> Result<ExitReason, Box<dyn std::error::Error>> {
+    let mut textarea = tui_textarea::TextArea::default();
+
     loop {
         list_state.select(Some(app.selected));
-        terminal.draw(|f| draw(f, app, list_state))?;
+        terminal.draw(|f| draw(f, app, list_state, &textarea))?;
 
-        // When Cursor is open, poll on a short timeout so we can auto-sync on file changes.
+        // Poll with short timeout when Cursor auto-sync is active
         let timeout = if app.cursor_file.is_some() {
             std::time::Duration::from_millis(500)
         } else {
@@ -765,7 +727,7 @@ fn event_loop(
         };
 
         if !event::poll(timeout)? {
-            // Timeout — check if cursor file was modified
+            // Timeout: check if cursor file changed
             if let Some(ref path) = app.cursor_file.clone() {
                 if let Ok(meta) = std::fs::metadata(path) {
                     if let Ok(mtime) = meta.modified() {
@@ -773,6 +735,11 @@ fn event_loop(
                         if changed {
                             app.cursor_file_mtime = Some(mtime);
                             if let Ok(code) = std::fs::read_to_string(path) {
+                                // Sync into problem and, if editing, into textarea too
+                                if app.editing {
+                                    let lines: Vec<String> = code.lines().map(str::to_string).collect();
+                                    textarea = tui_textarea::TextArea::new(lines);
+                                }
                                 if let Some(p) = app.selected_problem_mut() {
                                     p.code = code;
                                 }
@@ -787,58 +754,62 @@ fn event_loop(
         }
 
         match event::read()? {
+            Event::Paste(text) => {
+                if app.editing {
+                    textarea.insert_str(&text);
+                }
+            }
             Event::Mouse(mouse) => {
                 match mouse.kind {
-                    crossterm::event::MouseEventKind::ScrollDown => {
-                        match app.focused_panel {
-                            Panel::Description => app.desc_scroll = app.desc_scroll.saturating_add(3),
-                            Panel::Code => app.code_scroll = app.code_scroll.saturating_add(3),
-                            Panel::Output => app.output_scroll = app.output_scroll.saturating_add(3),
-                            Panel::List => {}
-                        }
-                    }
-                    crossterm::event::MouseEventKind::ScrollUp => {
-                        match app.focused_panel {
-                            Panel::Description => app.desc_scroll = app.desc_scroll.saturating_sub(3),
-                            Panel::Code => app.code_scroll = app.code_scroll.saturating_sub(3),
-                            Panel::Output => app.output_scroll = app.output_scroll.saturating_sub(3),
-                            Panel::List => {}
-                        }
-                    }
+                    crossterm::event::MouseEventKind::ScrollDown => match app.focused_panel {
+                        Panel::Description => app.desc_scroll = app.desc_scroll.saturating_add(3),
+                        Panel::Code => app.code_scroll = app.code_scroll.saturating_add(3),
+                        Panel::Output => app.output_scroll = app.output_scroll.saturating_add(3),
+                        Panel::List => {}
+                    },
+                    crossterm::event::MouseEventKind::ScrollUp => match app.focused_panel {
+                        Panel::Description => app.desc_scroll = app.desc_scroll.saturating_sub(3),
+                        Panel::Code => app.code_scroll = app.code_scroll.saturating_sub(3),
+                        Panel::Output => app.output_scroll = app.output_scroll.saturating_sub(3),
+                        Panel::List => {}
+                    },
                     _ => {}
                 }
-                continue;
             }
             Event::Key(key) => {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
 
+                if app.editing {
+                    if key.code == KeyCode::Esc {
+                        let new_code = textarea.lines().join("\n");
+                        if let Some(p) = app.selected_problem_mut() {
+                            p.code = new_code;
+                        }
+                        app.editing = false;
+                    } else {
+                        textarea.input(tui_textarea::Input::from(key));
+                    }
+                    continue;
+                }
+
                 match handle_key(app, key.code) {
                     Action::None => {}
 
-                    Action::OpenEditor => {
-                        if let Some(p) = app.selected_problem() {
-                            let path = temp_file_path(&p.slug, &app.language);
-                            std::fs::write(&path, &p.code)?;
-                            let editor = editor_cmd();
-                            suspend_tui(terminal)?;
-                            std::process::Command::new(&editor).arg(&path).status().ok();
-                            resume_tui(terminal)?;
-                            let new_code = std::fs::read_to_string(&path).unwrap_or_default();
-                            if let Some(p) = app.selected_problem_mut() {
-                                p.code = new_code;
-                            }
-                            app.code_scroll = 0;
-                        }
+                    Action::EnterEditMode => {
+                        let lines: Vec<String> = app.selected_problem()
+                            .map(|p| p.code.lines().map(str::to_string).collect())
+                            .unwrap_or_default();
+                        textarea = tui_textarea::TextArea::new(lines);
+                        app.editing = true;
                     }
 
                     Action::OpenCursor => {
                         if let Some(p) = app.selected_problem() {
                             let path = temp_file_path(&p.slug, &app.language);
                             std::fs::write(&path, &p.code)?;
-                            let mtime = std::fs::metadata(&path).ok()
-                                .and_then(|m| m.modified().ok());
+                            let mtime = std::fs::metadata(&path).ok().and_then(|m| m.modified().ok());
                             std::process::Command::new("cursor").arg(&path).spawn().ok();
                             app.cursor_file = Some(path.clone());
                             app.cursor_file_mtime = mtime;
@@ -850,6 +821,10 @@ fn event_loop(
                         if let Some(ref path) = app.cursor_file.clone() {
                             match std::fs::read_to_string(path) {
                                 Ok(code) => {
+                                    if app.editing {
+                                        let lines: Vec<String> = code.lines().map(str::to_string).collect();
+                                        textarea = tui_textarea::TextArea::new(lines);
+                                    }
                                     if let Some(p) = app.selected_problem_mut() {
                                         p.code = code;
                                     }
@@ -859,7 +834,7 @@ fn event_loop(
                                 Err(e) => { app.output = format!("Sync error: {e}"); }
                             }
                         } else {
-                            app.output = "No Cursor session active. Press [C] to open in Cursor first.".to_string();
+                            app.output = "No Cursor session. Press [C] to open in Cursor first.".to_string();
                         }
                     }
 
@@ -868,8 +843,8 @@ fn event_loop(
                     Action::LoadProblem => {
                         if let Some(slug) = app.selected_problem().map(|p| p.slug.clone()) {
                             if let Some(client) = app.client.clone() {
-                                app.output = "Loading\u{2026}".to_string();
-                                terminal.draw(|f| draw(f, app, list_state))?;
+                                app.output = "Loading…".to_string();
+                                terminal.draw(|f| draw(f, app, list_state, &textarea))?;
                                 match tokio::task::block_in_place(|| {
                                     tokio::runtime::Handle::current().block_on(client.get_problem(&slug))
                                 }) {
@@ -889,12 +864,10 @@ fn event_loop(
                                         app.output = "Problem loaded.".to_string();
                                         app.page = Page::Problem;
                                     }
-                                    Err(e) => {
-                                        app.output = format!("Error: {e}");
-                                    }
+                                    Err(e) => { app.output = format!("Error: {e}"); }
                                 }
                             } else {
-                                app.output = "No API session \u{2014} start with --session and --csrf".to_string();
+                                app.output = "No API session — start with --session and --csrf".to_string();
                             }
                         }
                     }
@@ -906,12 +879,12 @@ fn event_loop(
                         ) {
                             let (slug, code, qid, test_cases) = p;
                             if code.trim().is_empty() {
-                                app.output = "No code \u{2014} press Enter on the problem to load it first.".to_string();
+                                app.output = "No code — press Enter on the problem to load it first.".to_string();
                                 continue;
                             }
                             let lang = app.language.clone();
-                            app.output = "Running tests\u{2026}".to_string();
-                            terminal.draw(|f| draw(f, app, list_state))?;
+                            app.output = "Running tests…".to_string();
+                            terminal.draw(|f| draw(f, app, list_state, &textarea))?;
                             match tokio::task::block_in_place(|| {
                                 tokio::runtime::Handle::current().block_on(
                                     client.run_tests(&slug, &code, &lang, &test_cases, &qid)
@@ -920,15 +893,11 @@ fn event_loop(
                                 Ok(r) => {
                                     let mut out = format!(
                                         "Status: {}\nPassed: {}/{}\nRuntime: {}ms  Memory: {}MB",
-                                        r.status,
-                                        r.passed, r.total,
+                                        r.status, r.passed, r.total,
                                         r.runtime_ms.map_or("?".into(), |v| v.to_string()),
                                         r.memory_mb.map_or("?".into(), |v| format!("{:.1}", v)),
                                     );
-                                    if let Some(detail) = r.error_detail {
-                                        out.push('\n');
-                                        out.push_str(&detail);
-                                    }
+                                    if let Some(detail) = r.error_detail { out.push('\n'); out.push_str(&detail); }
                                     app.output = out;
                                 }
                                 Err(e) => { app.output = format!("Error: {e}"); }
@@ -945,20 +914,19 @@ fn event_loop(
                         ) {
                             let (slug, code, qid) = p;
                             if code.trim().is_empty() {
-                                app.output = "No code \u{2014} press Enter on the problem to load it first.".to_string();
+                                app.output = "No code — press Enter on the problem to load it first.".to_string();
                                 continue;
                             }
                             let lang = app.language.clone();
-                            app.output = "Submitting\u{2026}".to_string();
-                            terminal.draw(|f| draw(f, app, list_state))?;
+                            app.output = "Submitting…".to_string();
+                            terminal.draw(|f| draw(f, app, list_state, &textarea))?;
                             match tokio::task::block_in_place(|| {
                                 tokio::runtime::Handle::current().block_on(
                                     client.submit(&slug, &code, &lang, &qid)
                                 )
                             }) {
                                 Ok(r) => {
-                                    let accepted = r.status == "Accepted";
-                                    if accepted {
+                                    if r.status == "Accepted" {
                                         if let Some(&i) = app.filtered.get(app.selected) {
                                             app.problems[i].solved = true;
                                             app.solved_count = app.problems.iter().filter(|p| p.solved).count();
@@ -966,8 +934,7 @@ fn event_loop(
                                     }
                                     app.output = format!(
                                         "Status: {}\nPassed: {}/{}\nRuntime: {}ms  Memory: {}MB",
-                                        r.status,
-                                        r.passed, r.total,
+                                        r.status, r.passed, r.total,
                                         r.runtime_ms.map_or("?".into(), |v| v.to_string()),
                                         r.memory_mb.map_or("?".into(), |v| format!("{:.1}", v)),
                                     );
@@ -990,6 +957,6 @@ fn truncate(s: &str, max: usize) -> String {
         s.to_string()
     } else {
         let cut = s.char_indices().nth(max - 1).map(|(i, _)| i).unwrap_or(max);
-        format!("{}\u{2026}", &s[..cut])
+        format!("{}…", &s[..cut])
     }
 }
