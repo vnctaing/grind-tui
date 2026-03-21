@@ -353,7 +353,7 @@ fn draw_problem_sections(f: &mut Frame, area: Rect, app: &App) {
     }
 
     // Editor bar is always visible at the top of the right column
-    let editor_bar_height = 2u16;
+    let editor_bar_height = 3u16;
     let output_height = if app.output_collapsed { Constraint::Length(1) } else { Constraint::Percentage(25) };
 
     if app.code_collapsed {
@@ -387,29 +387,41 @@ fn draw_desc_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
 }
 
 fn draw_editor_bar(f: &mut Frame, area: Rect, app: &App) {
-    let spans: Vec<Span> = if let Some(ref name) = app.detached_editor_name {
-        // Active detached session
-        vec![
+    let file_path = app.selected_problem()
+        .map(|p| code_file_path(&p.slug, &app.language))
+        .unwrap_or_default();
+
+    let line1: Line = if let Some(ref name) = app.detached_editor_name {
+        Line::from(vec![
             Span::styled(" ⟳ ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
             Span::styled(format!("{} ", name), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
             Span::styled("auto-syncing on save  ", Style::default().fg(Color::DarkGray)),
             Span::styled("[y]", Style::default().fg(Color::Yellow)),
             Span::styled("force sync", Style::default().fg(Color::DarkGray)),
-        ]
+        ])
     } else {
-        // No editor open — invite the user
-        let mut s = vec![
-            Span::styled(" ✏  Start coding: ", Style::default().fg(Color::DarkGray)),
-        ];
+        let mut spans = vec![Span::styled(" ✏  Start coding: ", Style::default().fg(Color::DarkGray))];
         for ed in &app.editors {
-            s.push(Span::styled(format!("[{}]", ed.key), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
-            s.push(Span::styled(format!("{} ", ed.name), Style::default().fg(Color::White)));
+            spans.push(Span::styled(format!("[{}]", ed.key), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+            spans.push(Span::styled(format!("{} ", ed.name), Style::default().fg(Color::White)));
         }
-        s
+        Line::from(spans)
+    };
+
+    let line2: Line = if file_path.is_empty() {
+        Line::from("")
+    } else {
+        let cmd = app.detached_editor_name.as_deref()
+            .or_else(|| app.editors.first().map(|e| e.command.as_str()))
+            .unwrap_or("vim");
+        Line::from(vec![
+            Span::styled(" 💡 New tab: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("{} {}", cmd, file_path), Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
+        ])
     };
 
     f.render_widget(
-        Paragraph::new(Line::from(spans))
+        Paragraph::new(vec![line1, line2])
             .block(Block::default().borders(Borders::BOTTOM).border_style(Style::default().fg(Color::DarkGray))),
         area,
     );
