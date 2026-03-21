@@ -37,15 +37,10 @@ fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
     println!("Step 1 — Open Chrome, go to leetcode.com and log in.");
     println!("         Then open DevTools (Cmd+Option+I) → Console tab.");
     println!();
-    println!("         Paste this snippet and hit Enter:");
+    println!("         Paste this one-liner and hit Enter:");
     println!();
-    println!("  ┌─────────────────────────────────────────────────────┐");
-    println!("  │ const c = Object.fromEntries(document.cookie        │");
-    println!("  │   .split('; ').map(x => x.split(/=(.*)/s).slice(0,2)│");
-    println!("  │   .map(([k,v]) => [k,v]));                          │");
-    println!("  │ console.log(c['LEETCODE_SESSION']);                  │");
-    println!("  │ console.log(c['csrftoken']);                         │");
-    println!("  └─────────────────────────────────────────────────────┘");
+    println!("  document.cookie.split('; ').filter(c=>c.startsWith('LEETCODE_SESSION')||c.startsWith('csrftoken')).forEach(c=>console.log(c.split(/=(.*)/).slice(1,2).join('')))");
+    println!();
     println!();
     println!("Step 2 — Paste the two values below.");
     println!();
