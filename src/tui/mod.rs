@@ -379,24 +379,47 @@ fn draw_desc_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
 }
 
 fn draw_code_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
-    // Build the editor hints: "[e]vim  [C]Cursor⟳"
-    let editor_hints: String = app.editors.iter().map(|ed| {
-        let sync_marker = if ed.detach {
-            if app.detached_editor_name.as_deref() == Some(&ed.name) { "⟳" } else { "" }
-        } else { "" };
-        format!("[{}]{}{} ", ed.key, ed.name, sync_marker)
-    }).collect();
+    let border_style = if focused { Style::default().fg(Color::Cyan) } else { Style::default() };
+    let title = format!(" Code preview — {} ", app.language);
+    let block = Block::default().borders(Borders::ALL).title(title).border_style(border_style);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
-    let title = if focused {
-        format!(" Code [focused — {}] ", app.language)
-    } else {
-        format!(" {}— {} ", editor_hints, app.language)
+    // Invitation banner
+    let invite: Vec<Line<'static>> = {
+        let mut lines = vec![
+            Line::from(Span::styled(
+                " Open in your editor: ",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ];
+        for ed in &app.editors {
+            let sync_note = if ed.detach { " (auto-sync)" } else { "" };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  [{}] ", ed.key),
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{}{}", ed.name, sync_note),
+                    Style::default().fg(Color::White),
+                ),
+            ]));
+        }
+        lines.push(Line::from(""));
+        lines
     };
 
-    let border_style = if focused { Style::default().fg(Color::Cyan) } else { Style::default() };
+    let banner_height = invite.len() as u16;
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(banner_height), Constraint::Min(0)])
+        .split(inner);
+
+    f.render_widget(Paragraph::new(invite), layout[0]);
 
     let highlighted: Vec<Line<'static>> = highlight_code(
-        app.selected_problem().map(|p| p.code.as_str()).unwrap_or("# Select a problem and press Enter"),
+        app.selected_problem().map(|p| p.code.as_str()).unwrap_or(""),
         &app.language,
     ).into_iter().enumerate().map(|(i, mut l)| {
         l.spans.insert(0, Span::styled(format!("{:>3} ", i + 1), Style::default().fg(Color::DarkGray)));
@@ -405,10 +428,9 @@ fn draw_code_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
 
     f.render_widget(
         Paragraph::new(highlighted)
-            .block(Block::default().borders(Borders::ALL).title(title).border_style(border_style))
             .wrap(Wrap { trim: false })
             .scroll((app.code_scroll, 0)),
-        area,
+        layout[1],
     );
 }
 
@@ -645,6 +667,7 @@ fn event_loop(
                                 let path = code_file_path(&p.slug, &app.language);
                                 std::fs::write(&path, &p.code)?;
 
+                                app.code_collapsed = true;
                                 if ed.detach {
                                     let mtime = std::fs::metadata(&path).ok().and_then(|m| m.modified().ok());
                                     std::process::Command::new(&ed.command).arg(&path).spawn().ok();
