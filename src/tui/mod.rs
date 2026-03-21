@@ -130,6 +130,7 @@ pub struct App {
     pub page: Page,
     pub desc_collapsed: bool,
     pub output_collapsed: bool,
+    pub code_collapsed: bool,
     pub editors: Vec<EditorDef>,
     /// File currently open in a detached editor (auto-sync watches this)
     pub detached_file: Option<String>,
@@ -158,6 +159,7 @@ impl App {
             page: Page::List,
             desc_collapsed: false,
             output_collapsed: false,
+            code_collapsed: true,
             editors: load_editors(),
             detached_file: None,
             detached_file_mtime: None,
@@ -350,12 +352,16 @@ fn draw_problem_sections(f: &mut Frame, area: Rect, app: &App) {
         draw_desc_section(f, cols[0], app, app.focused_panel == Panel::Description);
     }
 
-    let output_height = if app.output_collapsed { Constraint::Length(1) } else { Constraint::Percentage(25) };
-    let right_rows = Layout::default().direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), output_height]).split(cols[1]);
-
-    draw_code_section(f, right_rows[0], app, app.focused_panel == Panel::Code);
-    draw_output_section(f, right_rows[1], app, app.focused_panel == Panel::Output);
+    if app.code_collapsed {
+        // Only output on the right
+        draw_output_section(f, cols[1], app, app.focused_panel == Panel::Output);
+    } else {
+        let output_height = if app.output_collapsed { Constraint::Length(1) } else { Constraint::Percentage(25) };
+        let right_rows = Layout::default().direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), output_height]).split(cols[1]);
+        draw_code_section(f, right_rows[0], app, app.focused_panel == Panel::Code);
+        draw_output_section(f, right_rows[1], app, app.focused_panel == Panel::Output);
+    }
 }
 
 fn draw_desc_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
@@ -435,9 +441,10 @@ fn draw_problem_status(f: &mut Frame, area: Rect, app: &App) {
     let editor_keys: String = app.editors.iter()
         .map(|ed| format!("[{}]{} ", ed.key, ed.name))
         .collect();
+    let code_label = if app.code_collapsed { "[c]code▸" } else { "[c]code▾" };
     let status = format!(
-        " [b]back  {}[r]run  [s]submit  [l]lang:{}  [p]desc  [o]output  [Tab]cycle  [d]disguise  [q]quit",
-        editor_keys, app.language,
+        " [b]back  {}[r]run  [s]submit  [l]lang:{}  [p]desc  [o]output  {}  [Tab]cycle  [d]disguise  [q]quit",
+        editor_keys, app.language, code_label,
     );
     f.render_widget(
         Paragraph::new(status).style(Style::default().bg(Color::DarkGray).fg(Color::White)),
@@ -483,11 +490,14 @@ fn handle_key_problem(app: &mut App, key: KeyCode) -> Action {
             app.focused_panel = match app.focused_panel {
                 Panel::Code => Panel::Output,
                 Panel::Output => Panel::Description,
-                Panel::Description | Panel::List => Panel::Code,
+                Panel::Description | Panel::List => {
+                    if app.code_collapsed { Panel::Output } else { Panel::Code }
+                }
             };
             Action::None
         }
         KeyCode::Char('b') => { app.page = Page::List; Action::None }
+        KeyCode::Char('c') => { app.code_collapsed = !app.code_collapsed; Action::None }
         KeyCode::Char('p') => {
             if app.desc_collapsed { app.desc_collapsed = false; app.focused_panel = Panel::Description; }
             else if app.focused_panel == Panel::Description { app.desc_collapsed = true; app.focused_panel = Panel::Code; }
