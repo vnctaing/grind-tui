@@ -429,7 +429,7 @@ impl LeetCodeClient {
                                 let got_val = got.get(i).and_then(|v| v.as_str()).unwrap_or("?");
                                 let exp_val = exp.get(i).and_then(|v| v.as_str()).unwrap_or("?");
                                 if c == '0' {
-                                    Some(format!("✗ Test {}: got {}  expected {}", i + 1, got_val, exp_val))
+                                    Some(format!("✗ Test {}\nGot:      {}\nExpected: {}", i + 1, got_val, exp_val))
                                 } else {
                                     Some(format!("✓ Test {}: {}", i + 1, got_val))
                                 }

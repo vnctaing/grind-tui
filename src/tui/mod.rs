@@ -476,19 +476,28 @@ fn draw_output_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
         );
         return;
     }
-    let output_style = if app.output.contains("Accepted") || app.output.contains("passed") {
-        Style::default().fg(Color::Green)
-    } else if app.output.contains("Error") || app.output.contains("Wrong") {
-        Style::default().fg(Color::Red)
-    } else {
-        Style::default()
-    };
     let border_style = if focused { Style::default().fg(Color::Cyan) } else { Style::default() };
     let title = if focused { " Output [focused — o to collapse] " } else { " [o] Output " };
+
+    let lines: Vec<Line> = app.output.lines().map(|line| {
+        let style = if line.starts_with("✓") || line.starts_with("Expected:") || line.starts_with("Status: Accepted") {
+            Style::default().fg(Color::Green)
+        } else if line.starts_with("✗") || line.starts_with("Got:") || line.starts_with("Status: Wrong") || line.starts_with("Status: Runtime") || line.starts_with("Status: Time") {
+            Style::default().fg(Color::Red)
+        } else if line.starts_with("Input:") {
+            Style::default().fg(Color::Yellow)
+        } else if line.starts_with("Status:") {
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        Line::from(Span::styled(line.to_string(), style))
+    }).collect();
+
     f.render_widget(
-        Paragraph::new(app.output.as_str())
+        Paragraph::new(lines)
             .block(Block::default().borders(Borders::ALL).title(title).border_style(border_style))
-            .style(output_style).wrap(Wrap { trim: false }).scroll((app.output_scroll, 0)),
+            .wrap(Wrap { trim: false }).scroll((app.output_scroll, 0)),
         area,
     );
 }
