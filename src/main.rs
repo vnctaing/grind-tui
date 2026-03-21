@@ -39,10 +39,11 @@ fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
     println!();
     println!("         Paste this one-liner and hit Enter:");
     println!();
-    println!("  document.cookie.split('; ').filter(c=>c.startsWith('LEETCODE_SESSION')||c.startsWith('csrftoken')).forEach(c=>console.log(c.split(/=(.*)/).slice(1,2).join('')))");
+    println!("  ['LEETCODE_SESSION','csrftoken'].forEach(k=>{{const c=document.cookie.split('; ').find(x=>x.startsWith(k+'='));console.log(k+': '+(c?c.slice(k.length+1):'NOT FOUND'))}})");
     println!();
+    println!("         It should print two lines — one per token.");
     println!();
-    println!("Step 2 — Paste the two values below.");
+    println!("Step 2 — Copy each value (after the colon) and paste below.");
     println!();
 
     print!("  LEETCODE_SESSION: ");
