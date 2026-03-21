@@ -358,10 +358,17 @@ fn draw_problem_sections(f: &mut Frame, area: Rect, app: &App) {
 
     if app.code_collapsed {
         let right_rows = Layout::default().direction(Direction::Vertical)
-            .constraints([Constraint::Length(editor_bar_height), Constraint::Min(0)])
+            .constraints([Constraint::Length(editor_bar_height), Constraint::Length(1), Constraint::Min(0)])
             .split(cols[1]);
         draw_editor_bar(f, right_rows[0], app);
-        draw_output_section(f, right_rows[1], app, app.focused_panel == Panel::Output);
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                " [c] ▸ Code preview (hidden) ",
+                Style::default().fg(Color::DarkGray),
+            )),
+            right_rows[1],
+        );
+        draw_output_section(f, right_rows[2], app, app.focused_panel == Panel::Output);
     } else {
         let right_rows = Layout::default().direction(Direction::Vertical)
             .constraints([Constraint::Length(editor_bar_height), Constraint::Min(0), output_height])
