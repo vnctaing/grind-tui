@@ -468,6 +468,46 @@ fn draw_code_section(f: &mut Frame, area: Rect, app: &App, _focused: bool) {
     );
 }
 
+fn diff_line(got: &str, expected: &str, label: &str, base_color: Color) -> Line<'static> {
+    let parse = |s: &str| -> Option<Vec<String>> {
+        let t = s.trim();
+        if t.starts_with('[') && t.ends_with(']') {
+            Some(t[1..t.len()-1].split(',').map(|x| x.trim().to_string()).collect())
+        } else {
+            None
+        }
+    };
+
+    let dim = Style::default().fg(Color::DarkGray);
+    let highlight = Style::default().fg(base_color).add_modifier(Modifier::BOLD);
+    let normal = Style::default().fg(base_color);
+
+    let other = if label == "Got:     " { expected } else { got };
+
+    if let (Some(items), Some(other_items)) = (parse(s_for(label, got, expected)), parse(other)) {
+        let mut spans = vec![Span::styled(format!("{} [", label), normal)];
+        for (i, item) in items.iter().enumerate() {
+            let matches = other_items.get(i).map(|o| o == item).unwrap_or(false);
+            spans.push(Span::styled(item.clone(), if matches { dim } else { highlight }));
+            if i + 1 < items.len() {
+                spans.push(Span::styled(",", normal));
+            }
+        }
+        // extra items not in other
+        for i in items.len()..other_items.len() {
+            let _ = i; // missing items — already shown as dim absence
+        }
+        spans.push(Span::styled("]", normal));
+        Line::from(spans)
+    } else {
+        Line::from(Span::styled(format!("{} {}", label, s_for(label, got, expected)), normal))
+    }
+}
+
+fn s_for<'a>(label: &str, got: &'a str, expected: &'a str) -> &'a str {
+    if label.starts_with("Got") { got } else { expected }
+}
+
 fn draw_output_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
     if app.output_collapsed {
         f.render_widget(
@@ -479,10 +519,23 @@ fn draw_output_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
     let border_style = if focused { Style::default().fg(Color::Cyan) } else { Style::default() };
     let title = if focused { " Output [focused — o to collapse] " } else { " [o] Output " };
 
-    let lines: Vec<Line> = app.output.lines().map(|line| {
-        let style = if line.starts_with("✓") || line.starts_with("Expected:") || line.starts_with("Status: Accepted") {
+    let raw: Vec<&str> = app.output.lines().collect();
+    let mut lines: Vec<Line> = Vec::new();
+    let mut i = 0;
+    while i < raw.len() {
+        let line = raw[i];
+        // Detect Got/Expected pair and do element-level diff
+        if line.starts_with("Got:") && i + 1 < raw.len() && raw[i+1].starts_with("Expected:") {
+            let got_val = line.trim_start_matches("Got:").trim();
+            let exp_val = raw[i+1].trim_start_matches("Expected:").trim();
+            lines.push(diff_line(got_val, exp_val, "Got:     ", Color::Red));
+            lines.push(diff_line(got_val, exp_val, "Expected:", Color::Green));
+            i += 2;
+            continue;
+        }
+        let style = if line.starts_with("✓") || line.starts_with("Status: Accepted") {
             Style::default().fg(Color::Green)
-        } else if line.starts_with("✗") || line.starts_with("Got:") || line.starts_with("Status: Wrong") || line.starts_with("Status: Runtime") || line.starts_with("Status: Time") {
+        } else if line.starts_with("✗") || line.starts_with("Status: Wrong") || line.starts_with("Status: Runtime") || line.starts_with("Status: Time") {
             Style::default().fg(Color::Red)
         } else if line.starts_with("Input:") {
             Style::default().fg(Color::Yellow)
@@ -491,8 +544,9 @@ fn draw_output_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
         } else {
             Style::default()
         };
-        Line::from(Span::styled(line.to_string(), style))
-    }).collect();
+        lines.push(Line::from(Span::styled(line.to_string(), style)));
+        i += 1;
+    }
 
     f.render_widget(
         Paragraph::new(lines)
