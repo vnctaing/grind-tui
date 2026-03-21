@@ -11,44 +11,72 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Frame, Terminal,
 };
+use serde::{Deserialize, Serialize};
 use std::io;
+
+// ── Editor config ─────────────────────────────────────────────────────────────
+
+/// One configured editor. Stored in ~/.leetcode-tui/editors.json.
+/// - detach = false → TUI suspends, waits for the editor to exit, reads file back
+/// - detach = true  → editor is spawned in background, TUI auto-syncs on file save
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditorDef {
+    /// Display name shown in the UI
+    pub name: String,
+    /// Single character key to press (e.g. "e", "C")
+    pub key: String,
+    /// Command to invoke (e.g. "vim", "cursor", "nvim", "hx")
+    pub command: String,
+    /// If true, spawn without waiting (Cursor / VS Code style)
+    #[serde(default)]
+    pub detach: bool,
+}
+
+fn default_editors() -> Vec<EditorDef> {
+    vec![
+        EditorDef { name: "vim".into(),   key: "e".into(), command: "vim".into(),    detach: false },
+        EditorDef { name: "Cursor".into(), key: "C".into(), command: "cursor".into(), detach: true  },
+    ]
+}
+
+fn editors_config_path() -> std::path::PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join(".leetcode-tui")
+        .join("editors.json")
+}
+
+pub fn load_editors() -> Vec<EditorDef> {
+    let path = editors_config_path();
+    if !path.exists() {
+        // Write defaults so the user can discover and edit the file
+        if let Some(dir) = path.parent() { std::fs::create_dir_all(dir).ok(); }
+        let defaults = default_editors();
+        if let Ok(json) = serde_json::to_string_pretty(&defaults) {
+            std::fs::write(&path, json).ok();
+        }
+        return defaults;
+    }
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(default_editors)
+}
 
 // ── Shared types ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Difficulty {
-    Easy,
-    Medium,
-    Hard,
-    Unknown,
-}
+pub enum Difficulty { Easy, Medium, Hard, Unknown }
 
 impl Difficulty {
     pub fn from_str(s: &str) -> Self {
-        match s {
-            "Easy" => Self::Easy,
-            "Medium" => Self::Medium,
-            "Hard" => Self::Hard,
-            _ => Self::Unknown,
-        }
+        match s { "Easy" => Self::Easy, "Medium" => Self::Medium, "Hard" => Self::Hard, _ => Self::Unknown }
     }
-
     pub fn color(&self) -> Color {
-        match self {
-            Self::Easy => Color::Green,
-            Self::Medium => Color::Yellow,
-            Self::Hard => Color::Red,
-            Self::Unknown => Color::Gray,
-        }
+        match self { Self::Easy => Color::Green, Self::Medium => Color::Yellow, Self::Hard => Color::Red, Self::Unknown => Color::Gray }
     }
-
     pub fn label(&self) -> &'static str {
-        match self {
-            Self::Easy => "Easy",
-            Self::Medium => "Medium",
-            Self::Hard => "Hard",
-            Self::Unknown => "?",
-        }
+        match self { Self::Easy => "Easy", Self::Medium => "Medium", Self::Hard => "Hard", Self::Unknown => "?" }
     }
 }
 
@@ -66,34 +94,20 @@ pub struct Problem {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Panel {
-    List,
-    Description,
-    Code,
-    Output,
-}
+pub enum Panel { List, Description, Code, Output }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Page {
-    List,
-    Problem,
-}
+pub enum Page { List, Problem }
 
 #[derive(Debug)]
-pub enum ExitReason {
-    Quit,
-    SwitchToDisguise,
-    SwitchToClassic,
-}
+pub enum ExitReason { Quit, SwitchToDisguise, SwitchToClassic }
 
 enum Action {
     Exit(ExitReason),
     LoadProblem,
     RunTests,
     Submit,
-    EnterEditMode,
-    OpenCursor,
-    SyncCursor,
+    SyncDetached,
     None,
 }
 
@@ -113,11 +127,14 @@ pub struct App {
     pub output_scroll: u16,
     pub client: Option<std::sync::Arc<crate::api::LeetCodeClient>>,
     pub page: Page,
-    pub editing: bool,
     pub desc_collapsed: bool,
     pub output_collapsed: bool,
-    pub cursor_file: Option<String>,
-    pub cursor_file_mtime: Option<std::time::SystemTime>,
+    pub editors: Vec<EditorDef>,
+    /// File currently open in a detached editor (auto-sync watches this)
+    pub detached_file: Option<String>,
+    pub detached_file_mtime: Option<std::time::SystemTime>,
+    /// Name of the detached editor currently open (for display)
+    pub detached_editor_name: Option<String>,
 }
 
 impl App {
@@ -138,25 +155,19 @@ impl App {
             output_scroll: 0,
             client: None,
             page: Page::List,
-            editing: false,
             desc_collapsed: false,
             output_collapsed: false,
-            cursor_file: None,
-            cursor_file_mtime: None,
+            editors: load_editors(),
+            detached_file: None,
+            detached_file_mtime: None,
+            detached_editor_name: None,
         }
     }
 
     pub fn rebuild_filtered(&mut self) {
         let q = self.search_query.to_lowercase();
-        self.filtered = self
-            .problems
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| {
-                q.is_empty()
-                    || p.title.to_lowercase().contains(&q)
-                    || p.id.to_string().contains(&q)
-            })
+        self.filtered = self.problems.iter().enumerate()
+            .filter(|(_, p)| q.is_empty() || p.title.to_lowercase().contains(&q) || p.id.to_string().contains(&q))
             .map(|(i, _)| i)
             .collect();
         if self.selected >= self.filtered.len() {
@@ -169,111 +180,74 @@ impl App {
     }
 
     pub fn selected_problem_mut(&mut self) -> Option<&mut Problem> {
-        if let Some(&i) = self.filtered.get(self.selected) {
-            self.problems.get_mut(i)
-        } else {
-            None
-        }
+        if let Some(&i) = self.filtered.get(self.selected) { self.problems.get_mut(i) } else { None }
     }
 }
 
-// ── Cursor file helpers ───────────────────────────────────────────────────────
+// ── File helpers ──────────────────────────────────────────────────────────────
 
 fn ext_for_lang(lang: &str) -> &'static str {
     match lang {
-        "python3" | "python" => "py",
-        "rust" => "rs",
-        "javascript" => "js",
-        "typescript" => "ts",
-        "java" => "java",
-        "cpp" => "cpp",
-        "go" => "go",
-        "c" => "c",
-        _ => "txt",
+        "python3" | "python" => "py", "rust" => "rs", "javascript" => "js",
+        "typescript" => "ts", "java" => "java", "cpp" => "cpp", "go" => "go", "c" => "c", _ => "txt",
     }
 }
 
-fn temp_file_path(slug: &str, lang: &str) -> String {
-    let dir = dirs::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-        .join(".leetcode-tui");
+fn code_file_path(slug: &str, lang: &str) -> String {
+    let dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp")).join(".leetcode-tui");
     std::fs::create_dir_all(&dir).ok();
-    dir.join(format!("{}.{}", slug, ext_for_lang(lang)))
-        .to_string_lossy()
-        .to_string()
+    dir.join(format!("{}.{}", slug, ext_for_lang(lang))).to_string_lossy().to_string()
 }
 
 // ── Syntax highlighting ───────────────────────────────────────────────────────
 
 fn keywords_for_lang(lang: &str) -> &'static [&'static str] {
     match lang {
-        "python3" | "python" => &[
-            "def", "class", "return", "if", "elif", "else", "for", "while", "in", "and", "or",
-            "not", "import", "from", "pass", "break", "continue", "lambda", "with", "as", "try",
-            "except", "finally", "raise", "True", "False", "None", "self",
-        ],
-        "rust" => &[
-            "fn", "let", "mut", "pub", "use", "struct", "enum", "impl", "trait", "return", "if",
-            "else", "for", "while", "match", "mod", "crate", "super", "self", "Self", "type",
-            "where", "async", "await", "move", "ref", "in", "loop", "break", "continue", "const",
-            "static",
-        ],
-        "javascript" | "typescript" => &[
-            "function", "const", "let", "var", "return", "if", "else", "for", "while", "class",
-            "import", "export", "from", "async", "await", "new", "this", "typeof", "instanceof",
-            "null", "undefined", "true", "false",
-        ],
+        "python3" | "python" => &["def","class","return","if","elif","else","for","while","in","and","or","not","import","from","pass","break","continue","lambda","with","as","try","except","finally","raise","True","False","None","self"],
+        "rust" => &["fn","let","mut","pub","use","struct","enum","impl","trait","return","if","else","for","while","match","mod","crate","super","self","Self","type","where","async","await","move","ref","in","loop","break","continue","const","static"],
+        "javascript" | "typescript" => &["function","const","let","var","return","if","else","for","while","class","import","export","from","async","await","new","this","typeof","instanceof","null","undefined","true","false"],
         _ => &[],
     }
 }
 
 fn highlight_code(code: &str, lang: &str) -> Vec<Line<'static>> {
     let keywords = keywords_for_lang(lang);
-    code.lines()
-        .map(|line| {
-            let comment_start = match lang {
-                "python3" | "python" => line.find('#'),
-                "rust" | "javascript" | "typescript" | "cpp" | "java" | "go" => line.find("//"),
-                _ => None,
-            };
-            if let Some(pos) = comment_start {
-                let (code_part, comment_part) = line.split_at(pos);
-                let mut spans = tokenize_spans(code_part, keywords);
-                spans.push(Span::styled(
-                    comment_part.to_string(),
-                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
-                ));
-                Line::from(spans)
-            } else {
-                Line::from(tokenize_spans(line, keywords))
-            }
-        })
-        .collect()
+    code.lines().map(|line| {
+        let comment_start = match lang {
+            "python3" | "python" => line.find('#'),
+            "rust" | "javascript" | "typescript" | "cpp" | "java" | "go" => line.find("//"),
+            _ => None,
+        };
+        if let Some(pos) = comment_start {
+            let (code_part, comment_part) = line.split_at(pos);
+            let mut spans = tokenize_spans(code_part, keywords);
+            spans.push(Span::styled(comment_part.to_string(), Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)));
+            Line::from(spans)
+        } else {
+            Line::from(tokenize_spans(line, keywords))
+        }
+    }).collect()
 }
 
 fn tokenize_spans(line: &str, keywords: &[&str]) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let mut current = String::new();
-
     for ch in line.chars() {
         if ch.is_alphanumeric() || ch == '_' {
             current.push(ch);
         } else {
             if !current.is_empty() {
-                let word = current.clone();
-                spans.push(make_word_span(word, keywords));
+                spans.push(word_span(current.clone(), keywords));
                 current.clear();
             }
             spans.push(Span::raw(ch.to_string()));
         }
     }
-    if !current.is_empty() {
-        spans.push(make_word_span(current, keywords));
-    }
+    if !current.is_empty() { spans.push(word_span(current, keywords)); }
     spans
 }
 
-fn make_word_span(word: String, keywords: &[&str]) -> Span<'static> {
+fn word_span(word: String, keywords: &[&str]) -> Span<'static> {
     if keywords.contains(&word.as_str()) {
         Span::styled(word, Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
     } else if word.chars().next().map(|c| c.is_numeric()).unwrap_or(false) {
@@ -283,86 +257,30 @@ fn make_word_span(word: String, keywords: &[&str]) -> Span<'static> {
     }
 }
 
-fn inject_cursor(spans: Vec<Span<'static>>, col: usize) -> Vec<Span<'static>> {
-    let cursor_style = Style::default().bg(Color::White).fg(Color::Black);
-    let mut result = Vec::new();
-    let mut total = 0usize;
-    let mut placed = false;
-
-    for span in spans {
-        let chars: Vec<char> = span.content.chars().collect();
-        let len = chars.len();
-        if !placed && col >= total && col < total + len {
-            let local = col - total;
-            if local > 0 {
-                result.push(Span::styled(chars[..local].iter().collect::<String>(), span.style));
-            }
-            result.push(Span::styled(chars[local].to_string(), cursor_style));
-            if local + 1 < len {
-                result.push(Span::styled(chars[local + 1..].iter().collect::<String>(), span.style));
-            }
-            placed = true;
-        } else {
-            result.push(span);
-        }
-        total += len;
-    }
-    if !placed {
-        result.push(Span::styled(" ", cursor_style));
-    }
-    result
-}
-
-fn tokenize_line_for_editor(line: &str, keywords: &[&str], lang: &str, cursor_col: Option<usize>) -> Line<'static> {
-    let comment_start = match lang {
-        "python3" | "python" => line.find('#'),
-        "rust" | "javascript" | "typescript" | "cpp" | "java" | "go" => line.find("//"),
-        _ => None,
-    };
-    let spans = if let Some(pos) = comment_start {
-        let (code_part, comment_part) = line.split_at(pos);
-        let mut s = tokenize_spans(code_part, keywords);
-        s.push(Span::styled(comment_part.to_string(), Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)));
-        s
-    } else {
-        tokenize_spans(line, keywords)
-    };
-    let spans = if let Some(col) = cursor_col { inject_cursor(spans, col) } else { spans };
-    Line::from(spans)
-}
-
 // ── Drawing ───────────────────────────────────────────────────────────────────
 
-fn draw(f: &mut Frame, app: &App, list_state: &mut ListState, textarea: &tui_textarea::TextArea) {
+fn draw(f: &mut Frame, app: &App, list_state: &mut ListState) {
     match app.page {
         Page::List => draw_list_page(f, app, list_state),
-        Page::Problem => draw_problem_page(f, app, textarea),
+        Page::Problem => draw_problem_page(f, app),
     }
 }
 
 fn draw_list_page(f: &mut Frame, app: &App, list_state: &mut ListState) {
     let area = f.area();
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
-        .split(area);
+    let chunks = Layout::default().direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(1)]).split(area);
     draw_list_full(f, chunks[0], app, list_state);
     draw_list_status(f, chunks[1], app);
 }
 
 fn draw_list_full(f: &mut Frame, area: Rect, app: &App, list_state: &mut ListState) {
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
-        .split(area);
+    let rows = Layout::default().direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0)]).split(area);
 
-    let search_text = if app.searching {
-        format!("/{}_", app.search_query)
-    } else if !app.search_query.is_empty() {
-        format!("/{}", app.search_query)
-    } else {
-        " /  (press / to search)".to_string()
-    };
+    let search_text = if app.searching { format!("/{}_", app.search_query) }
+        else if !app.search_query.is_empty() { format!("/{}", app.search_query) }
+        else { " /  (press / to search)".to_string() };
     f.render_widget(
         Paragraph::new(search_text)
             .style(if app.searching { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::DarkGray) })
@@ -372,11 +290,10 @@ fn draw_list_full(f: &mut Frame, area: Rect, app: &App, list_state: &mut ListSta
 
     let items: Vec<ListItem> = app.filtered.iter().map(|&i| {
         let p = &app.problems[i];
-        let check = if p.solved { "✓" } else { " " };
         ListItem::new(Line::from(vec![
             Span::styled(format!("{:>4}", p.id), Style::default().fg(Color::DarkGray)),
             Span::raw("  "),
-            Span::styled(check, Style::default().fg(Color::Green)),
+            Span::styled(if p.solved { "✓" } else { " " }, Style::default().fg(Color::Green)),
             Span::raw("  "),
             Span::raw(format!("{:<30}", truncate(&p.title, 30))),
             Span::raw("  "),
@@ -390,8 +307,7 @@ fn draw_list_full(f: &mut Frame, area: Rect, app: &App, list_state: &mut ListSta
                 .title(format!(" #    ✓  Title                           Difficulty  │ {} problems ", app.filtered.len())))
             .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD))
             .highlight_symbol("▶ "),
-        rows[1],
-        list_state,
+        rows[1], list_state,
     );
 }
 
@@ -405,14 +321,12 @@ fn draw_list_status(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn draw_problem_page(f: &mut Frame, app: &App, textarea: &tui_textarea::TextArea) {
+fn draw_problem_page(f: &mut Frame, app: &App) {
     let area = f.area();
-    let outer = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)])
-        .split(area);
+    let outer = Layout::default().direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).split(area);
     draw_problem_title(f, outer[0], app);
-    draw_problem_sections(f, outer[1], app, textarea);
+    draw_problem_sections(f, outer[1], app);
     draw_problem_status(f, outer[2], app);
 }
 
@@ -426,30 +340,25 @@ fn draw_problem_title(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(title).style(style), area);
 }
 
-fn draw_problem_sections(f: &mut Frame, area: Rect, app: &App, textarea: &tui_textarea::TextArea) {
+fn draw_problem_sections(f: &mut Frame, area: Rect, app: &App) {
     let desc_width = if app.desc_collapsed { Constraint::Length(0) } else { Constraint::Percentage(40) };
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([desc_width, Constraint::Min(0)])
-        .split(area);
+    let cols = Layout::default().direction(Direction::Horizontal)
+        .constraints([desc_width, Constraint::Min(0)]).split(area);
 
     if !app.desc_collapsed {
         draw_desc_section(f, cols[0], app, app.focused_panel == Panel::Description);
     }
 
     let output_height = if app.output_collapsed { Constraint::Length(1) } else { Constraint::Percentage(25) };
-    let right_rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), output_height])
-        .split(cols[1]);
+    let right_rows = Layout::default().direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), output_height]).split(cols[1]);
 
-    draw_code_section(f, right_rows[0], app, textarea, app.focused_panel == Panel::Code);
+    draw_code_section(f, right_rows[0], app, app.focused_panel == Panel::Code);
     draw_output_section(f, right_rows[1], app, app.focused_panel == Panel::Output);
 }
 
 fn draw_desc_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
-    let content = app.selected_problem()
-        .map(|p| p.description.as_str())
+    let content = app.selected_problem().map(|p| p.description.as_str())
         .unwrap_or("Select a problem and press Enter to load it.");
     let title = if focused { " Description [focused — p to collapse] " } else { " [p] Description " };
     let border_style = if focused { Style::default().fg(Color::Cyan) } else { Style::default() };
@@ -462,97 +371,48 @@ fn draw_desc_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
     );
 }
 
-fn draw_code_section(
-    f: &mut Frame,
-    area: Rect,
-    app: &App,
-    textarea: &tui_textarea::TextArea,
-    focused: bool,
-) {
-    let cursor_hint = if app.cursor_file.is_some() { " ⟳ auto-sync " } else { " [C]cursor " };
-    let lang_label = if app.editing {
-        format!(" ✎ Code [editing] —{}— {} (Esc to save) ", cursor_hint, app.language)
-    } else if focused {
-        format!(" Code [focused] —{}— {} ", cursor_hint, app.language)
+fn draw_code_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
+    // Build the editor hints: "[e]vim  [C]Cursor⟳"
+    let editor_hints: String = app.editors.iter().map(|ed| {
+        let sync_marker = if ed.detach {
+            if app.detached_editor_name.as_deref() == Some(&ed.name) { "⟳" } else { "" }
+        } else { "" };
+        format!("[{}]{}{} ", ed.key, ed.name, sync_marker)
+    }).collect();
+
+    let title = if focused {
+        format!(" Code [focused — {}] ", app.language)
     } else {
-        format!(" [e] Code —{}— {} ", cursor_hint, app.language)
+        format!(" {}— {} ", editor_hints, app.language)
     };
 
-    let border_style = if app.editing {
-        Style::default().fg(Color::Yellow)
-    } else if focused {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default()
-    };
+    let border_style = if focused { Style::default().fg(Color::Cyan) } else { Style::default() };
 
-    let block = Block::default().borders(Borders::ALL).title(lang_label).border_style(border_style);
+    let highlighted: Vec<Line<'static>> = highlight_code(
+        app.selected_problem().map(|p| p.code.as_str()).unwrap_or("# Select a problem and press Enter"),
+        &app.language,
+    ).into_iter().enumerate().map(|(i, mut l)| {
+        l.spans.insert(0, Span::styled(format!("{:>3} ", i + 1), Style::default().fg(Color::DarkGray)));
+        l
+    }).collect();
 
-    if app.editing {
-        let inner = block.inner(area);
-        f.render_widget(block, area);
-
-        let lines = textarea.lines();
-        let (cursor_row, cursor_col) = textarea.cursor();
-        let keywords = keywords_for_lang(&app.language);
-        let lang = app.language.as_str();
-
-        let visible = inner.height as usize;
-        let scroll_row = if cursor_row >= app.code_scroll as usize + visible {
-            (cursor_row + 1).saturating_sub(visible) as u16
-        } else if cursor_row < app.code_scroll as usize {
-            cursor_row as u16
-        } else {
-            app.code_scroll
-        };
-
-        let highlighted: Vec<Line<'static>> = lines.iter().enumerate().map(|(row, line)| {
-            let col = if row == cursor_row { Some(cursor_col) } else { None };
-            let mut l = tokenize_line_for_editor(line, keywords, lang, col);
-            l.spans.insert(0, Span::styled(format!("{:>3} ", row + 1), Style::default().fg(Color::DarkGray)));
-            l
-        }).collect();
-
-        f.render_widget(
-            Paragraph::new(highlighted).wrap(Wrap { trim: false }).scroll((scroll_row, 0)),
-            inner,
-        );
-    } else {
-        let highlighted: Vec<Line<'static>> = highlight_code(
-            app.selected_problem().map(|p| p.code.as_str()).unwrap_or("# Select a problem and press Enter"),
-            &app.language,
-        )
-        .into_iter()
-        .enumerate()
-        .map(|(i, mut l)| {
-            l.spans.insert(0, Span::styled(format!("{:>3} ", i + 1), Style::default().fg(Color::DarkGray)));
-            l
-        })
-        .collect();
-
-        f.render_widget(
-            Paragraph::new(highlighted)
-                .block(block)
-                .wrap(Wrap { trim: false })
-                .scroll((app.code_scroll, 0)),
-            area,
-        );
-    }
+    f.render_widget(
+        Paragraph::new(highlighted)
+            .block(Block::default().borders(Borders::ALL).title(title).border_style(border_style))
+            .wrap(Wrap { trim: false })
+            .scroll((app.code_scroll, 0)),
+        area,
+    );
 }
 
 fn draw_output_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
     if app.output_collapsed {
         f.render_widget(
-            Paragraph::new(Span::styled(
-                " [o] Output ▸ (expand) ",
-                Style::default().fg(Color::DarkGray),
-            ))
-            .style(Style::default().bg(Color::Reset)),
+            Paragraph::new(Span::styled(" [o] Output ▸ (expand) ", Style::default().fg(Color::DarkGray))),
             area,
         );
         return;
     }
-
     let output_style = if app.output.contains("Accepted") || app.output.contains("passed") {
         Style::default().fg(Color::Green)
     } else if app.output.contains("Error") || app.output.contains("Wrong") {
@@ -562,40 +422,29 @@ fn draw_output_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
     };
     let border_style = if focused { Style::default().fg(Color::Cyan) } else { Style::default() };
     let title = if focused { " Output [focused — o to collapse] " } else { " [o] Output " };
-
     f.render_widget(
         Paragraph::new(app.output.as_str())
             .block(Block::default().borders(Borders::ALL).title(title).border_style(border_style))
-            .style(output_style)
-            .wrap(Wrap { trim: false })
-            .scroll((app.output_scroll, 0)),
+            .style(output_style).wrap(Wrap { trim: false }).scroll((app.output_scroll, 0)),
         area,
     );
 }
 
 fn draw_problem_status(f: &mut Frame, area: Rect, app: &App) {
-    let status = if app.editing {
-        " [Esc]save  [r]run  [s]submit".to_string()
-    } else {
-        format!(
-            " [b]back  [e]edit  [C]cursor  [r]run  [s]submit  [l]lang:{}  [p]problem  [o]output  [Tab]cycle  [d]disguise  [q]quit",
-            app.language,
-        )
-    };
+    let editor_keys: String = app.editors.iter()
+        .map(|ed| format!("[{}]{} ", ed.key, ed.name))
+        .collect();
+    let status = format!(
+        " [b]back  {}[r]run  [s]submit  [l]lang:{}  [p]desc  [o]output  [Tab]cycle  [d]disguise  [q]quit",
+        editor_keys, app.language,
+    );
     f.render_widget(
         Paragraph::new(status).style(Style::default().bg(Color::DarkGray).fg(Color::White)),
         area,
     );
 }
 
-// ── Event handling ────────────────────────────────────────────────────────────
-
-fn handle_key(app: &mut App, key: KeyCode) -> Action {
-    match app.page {
-        Page::List => handle_key_list(app, key),
-        Page::Problem => handle_key_problem(app, key),
-    }
-}
+// ── Key handling ──────────────────────────────────────────────────────────────
 
 fn handle_key_list(app: &mut App, key: KeyCode) -> Action {
     if app.searching {
@@ -629,68 +478,46 @@ fn handle_key_problem(app: &mut App, key: KeyCode) -> Action {
     match key {
         KeyCode::Char('q') => Action::Exit(ExitReason::Quit),
         KeyCode::Char('d') => Action::Exit(ExitReason::SwitchToDisguise),
-        KeyCode::Char('e') => Action::EnterEditMode,
-        KeyCode::Char('C') => Action::OpenCursor,
-        KeyCode::Char('y') => Action::SyncCursor,
-
         KeyCode::Tab => {
             app.focused_panel = match app.focused_panel {
                 Panel::Code => Panel::Output,
                 Panel::Output => Panel::Description,
-                Panel::Description => Panel::Code,
-                Panel::List => Panel::Code,
+                Panel::Description | Panel::List => Panel::Code,
             };
             Action::None
         }
         KeyCode::Char('b') => { app.page = Page::List; Action::None }
-
         KeyCode::Char('p') => {
-            if app.desc_collapsed {
-                app.desc_collapsed = false;
-                app.focused_panel = Panel::Description;
-            } else if app.focused_panel == Panel::Description {
-                app.desc_collapsed = true;
-                app.focused_panel = Panel::Code;
-            } else {
-                app.focused_panel = Panel::Description;
-            }
+            if app.desc_collapsed { app.desc_collapsed = false; app.focused_panel = Panel::Description; }
+            else if app.focused_panel == Panel::Description { app.desc_collapsed = true; app.focused_panel = Panel::Code; }
+            else { app.focused_panel = Panel::Description; }
             Action::None
         }
-
         KeyCode::Char('o') => {
-            if app.output_collapsed {
-                app.output_collapsed = false;
-                app.focused_panel = Panel::Output;
-            } else if app.focused_panel == Panel::Output {
-                app.output_collapsed = true;
-                app.focused_panel = Panel::Code;
-            } else {
-                app.focused_panel = Panel::Output;
-            }
+            if app.output_collapsed { app.output_collapsed = false; app.focused_panel = Panel::Output; }
+            else if app.focused_panel == Panel::Output { app.output_collapsed = true; app.focused_panel = Panel::Code; }
+            else { app.focused_panel = Panel::Output; }
             Action::None
         }
+        KeyCode::Char('y') => Action::SyncDetached,
         KeyCode::Char('r') => Action::RunTests,
         KeyCode::Char('s') => Action::Submit,
-
         KeyCode::Char('l') => {
-            const LANGS: &[&str] = &["python3", "rust", "javascript", "typescript", "java", "cpp", "go", "c"];
+            const LANGS: &[&str] = &["python3","rust","javascript","typescript","java","cpp","go","c"];
             let cur = LANGS.iter().position(|&l| l == app.language.as_str()).unwrap_or(0);
             let new_lang = LANGS[(cur + 1) % LANGS.len()].to_string();
             app.language = new_lang.clone();
             if let Some(p) = app.selected_problem_mut() {
-                if let Some(starter) = p.starter_code.get(&new_lang).cloned() {
-                    p.code = starter;
-                }
+                if let Some(starter) = p.starter_code.get(&new_lang).cloned() { p.code = starter; }
             }
             Action::None
         }
-
         KeyCode::Char('j') | KeyCode::Down => {
             match app.focused_panel {
                 Panel::Description => app.desc_scroll = app.desc_scroll.saturating_add(1),
                 Panel::Code => app.code_scroll = app.code_scroll.saturating_add(1),
                 Panel::Output => app.output_scroll = app.output_scroll.saturating_add(1),
-                Panel::List => app.desc_scroll = app.desc_scroll.saturating_add(1),
+                Panel::List => {}
             }
             Action::None
         }
@@ -699,12 +526,28 @@ fn handle_key_problem(app: &mut App, key: KeyCode) -> Action {
                 Panel::Description => app.desc_scroll = app.desc_scroll.saturating_sub(1),
                 Panel::Code => app.code_scroll = app.code_scroll.saturating_sub(1),
                 Panel::Output => app.output_scroll = app.output_scroll.saturating_sub(1),
-                Panel::List => app.desc_scroll = app.desc_scroll.saturating_sub(1),
+                Panel::List => {}
             }
             Action::None
         }
         _ => Action::None,
     }
+}
+
+// ── TUI suspend / resume ──────────────────────────────────────────────────────
+
+fn suspend_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), crossterm::event::DisableMouseCapture)?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()
+}
+
+fn resume_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
+    execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+    execute!(terminal.backend_mut(), crossterm::event::EnableMouseCapture)?;
+    enable_raw_mode()?;
+    terminal.clear()
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -714,17 +557,12 @@ pub async fn run(app: &mut App) -> Result<ExitReason, Box<dyn std::error::Error>
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     execute!(stdout, crossterm::event::EnableMouseCapture)?;
-    execute!(stdout, crossterm::event::EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-
     let mut list_state = ListState::default();
     list_state.select(Some(app.selected));
-
     let reason = event_loop(&mut terminal, app, &mut list_state)?;
-
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), crossterm::event::DisableBracketedPaste)?;
     execute!(terminal.backend_mut(), crossterm::event::DisableMouseCapture)?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
@@ -736,38 +574,29 @@ fn event_loop(
     app: &mut App,
     list_state: &mut ListState,
 ) -> Result<ExitReason, Box<dyn std::error::Error>> {
-    let mut textarea = tui_textarea::TextArea::default();
-
     loop {
         list_state.select(Some(app.selected));
-        terminal.draw(|f| draw(f, app, list_state, &textarea))?;
+        terminal.draw(|f| draw(f, app, list_state))?;
 
-        // Poll with short timeout when Cursor auto-sync is active
-        let timeout = if app.cursor_file.is_some() {
+        let timeout = if app.detached_file.is_some() {
             std::time::Duration::from_millis(500)
         } else {
             std::time::Duration::from_secs(3600)
         };
 
         if !event::poll(timeout)? {
-            // Timeout: check if cursor file changed
-            if let Some(ref path) = app.cursor_file.clone() {
+            // Auto-sync detached editor
+            if let Some(ref path) = app.detached_file.clone() {
                 if let Ok(meta) = std::fs::metadata(path) {
                     if let Ok(mtime) = meta.modified() {
-                        let changed = app.cursor_file_mtime.map(|prev| mtime > prev).unwrap_or(true);
+                        let changed = app.detached_file_mtime.map(|prev| mtime > prev).unwrap_or(true);
                         if changed {
-                            app.cursor_file_mtime = Some(mtime);
+                            app.detached_file_mtime = Some(mtime);
                             if let Ok(code) = std::fs::read_to_string(path) {
-                                // Sync into problem and, if editing, into textarea too
-                                if app.editing {
-                                    let lines: Vec<String> = code.lines().map(str::to_string).collect();
-                                    textarea = tui_textarea::TextArea::new(lines);
-                                }
-                                if let Some(p) = app.selected_problem_mut() {
-                                    p.code = code;
-                                }
+                                if let Some(p) = app.selected_problem_mut() { p.code = code; }
                                 app.code_scroll = 0;
-                                app.output = "Auto-synced from Cursor.".to_string();
+                                let name = app.detached_editor_name.clone().unwrap_or_else(|| "editor".into());
+                                app.output = format!("Auto-synced from {}.", name);
                             }
                         }
                     }
@@ -777,11 +606,6 @@ fn event_loop(
         }
 
         match event::read()? {
-            Event::Paste(text) => {
-                if app.editing {
-                    textarea.insert_str(&text);
-                }
-            }
             Event::Mouse(mouse) => {
                 match mouse.kind {
                     crossterm::event::MouseEventKind::ScrollDown => match app.focused_panel {
@@ -800,75 +624,67 @@ fn event_loop(
                 }
             }
             Event::Key(key) => {
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
+                if key.kind != KeyEventKind::Press { continue; }
 
-                if app.editing {
-                    if key.code == KeyCode::Esc {
-                        let new_code = textarea.lines().join("\n");
-                        if let Some(p) = app.selected_problem_mut() {
-                            p.code = new_code;
+                // Editor key handling (needs terminal access for suspend/resume)
+                if app.page == Page::Problem {
+                    if let KeyCode::Char(c) = key.code {
+                        if let Some(ed) = app.editors.iter().find(|e| e.key == c.to_string()).cloned() {
+                            if let Some(p) = app.selected_problem() {
+                                let path = code_file_path(&p.slug, &app.language);
+                                std::fs::write(&path, &p.code)?;
+
+                                if ed.detach {
+                                    let mtime = std::fs::metadata(&path).ok().and_then(|m| m.modified().ok());
+                                    std::process::Command::new(&ed.command).arg(&path).spawn().ok();
+                                    app.detached_file = Some(path.clone());
+                                    app.detached_file_mtime = mtime;
+                                    app.detached_editor_name = Some(ed.name.clone());
+                                    app.output = format!("Opened in {} — auto-syncing on save.\nFile: {}", ed.name, path);
+                                } else {
+                                    suspend_tui(terminal)?;
+                                    std::process::Command::new(&ed.command).arg(&path).status().ok();
+                                    resume_tui(terminal)?;
+                                    if let Ok(code) = std::fs::read_to_string(&path) {
+                                        if let Some(p) = app.selected_problem_mut() { p.code = code; }
+                                        app.code_scroll = 0;
+                                    }
+                                }
+                            }
+                            continue;
                         }
-                        app.editing = false;
-                    } else {
-                        textarea.input(tui_textarea::Input::from(key));
                     }
-                    continue;
                 }
 
-                match handle_key(app, key.code) {
+                let action = match app.page {
+                    Page::List => handle_key_list(app, key.code),
+                    Page::Problem => handle_key_problem(app, key.code),
+                };
+
+                match action {
                     Action::None => {}
+                    Action::Exit(reason) => return Ok(reason),
 
-                    Action::EnterEditMode => {
-                        let lines: Vec<String> = app.selected_problem()
-                            .map(|p| p.code.lines().map(str::to_string).collect())
-                            .unwrap_or_default();
-                        textarea = tui_textarea::TextArea::new(lines);
-                        app.editing = true;
-                        app.focused_panel = Panel::Code;
-                    }
-
-                    Action::OpenCursor => {
-                        if let Some(p) = app.selected_problem() {
-                            let path = temp_file_path(&p.slug, &app.language);
-                            std::fs::write(&path, &p.code)?;
-                            let mtime = std::fs::metadata(&path).ok().and_then(|m| m.modified().ok());
-                            std::process::Command::new("cursor").arg(&path).spawn().ok();
-                            app.cursor_file = Some(path.clone());
-                            app.cursor_file_mtime = mtime;
-                            app.output = format!("Opened in Cursor: {}\nAuto-syncing on save…", path);
-                        }
-                    }
-
-                    Action::SyncCursor => {
-                        if let Some(ref path) = app.cursor_file.clone() {
+                    Action::SyncDetached => {
+                        if let Some(ref path) = app.detached_file.clone() {
                             match std::fs::read_to_string(path) {
                                 Ok(code) => {
-                                    if app.editing {
-                                        let lines: Vec<String> = code.lines().map(str::to_string).collect();
-                                        textarea = tui_textarea::TextArea::new(lines);
-                                    }
-                                    if let Some(p) = app.selected_problem_mut() {
-                                        p.code = code;
-                                    }
+                                    if let Some(p) = app.selected_problem_mut() { p.code = code; }
                                     app.code_scroll = 0;
-                                    app.output = "Synced from Cursor.".to_string();
+                                    app.output = "Synced.".to_string();
                                 }
                                 Err(e) => { app.output = format!("Sync error: {e}"); }
                             }
                         } else {
-                            app.output = "No Cursor session. Press [C] to open in Cursor first.".to_string();
+                            app.output = "No detached editor open.".to_string();
                         }
                     }
-
-                    Action::Exit(reason) => return Ok(reason),
 
                     Action::LoadProblem => {
                         if let Some(slug) = app.selected_problem().map(|p| p.slug.clone()) {
                             if let Some(client) = app.client.clone() {
                                 app.output = "Loading…".to_string();
-                                terminal.draw(|f| draw(f, app, list_state, &textarea))?;
+                                terminal.draw(|f| draw(f, app, list_state))?;
                                 match tokio::task::block_in_place(|| {
                                     tokio::runtime::Handle::current().block_on(client.get_problem(&slug))
                                 }) {
@@ -881,8 +697,7 @@ fn event_loop(
                                             p.test_cases = detail.examples.join("\n");
                                             p.code = p.starter_code.get(&lang)
                                                 .or_else(|| p.starter_code.get("python3"))
-                                                .cloned()
-                                                .unwrap_or_default();
+                                                .cloned().unwrap_or_default();
                                         }
                                         app.desc_scroll = 0;
                                         app.output = "Problem loaded.".to_string();
@@ -903,16 +718,14 @@ fn event_loop(
                         ) {
                             let (slug, code, qid, test_cases) = p;
                             if code.trim().is_empty() {
-                                app.output = "No code — press Enter on the problem to load it first.".to_string();
+                                app.output = "No code — load the problem first.".to_string();
                                 continue;
                             }
                             let lang = app.language.clone();
                             app.output = "Running tests…".to_string();
-                            terminal.draw(|f| draw(f, app, list_state, &textarea))?;
+                            terminal.draw(|f| draw(f, app, list_state))?;
                             match tokio::task::block_in_place(|| {
-                                tokio::runtime::Handle::current().block_on(
-                                    client.run_tests(&slug, &code, &lang, &test_cases, &qid)
-                                )
+                                tokio::runtime::Handle::current().block_on(client.run_tests(&slug, &code, &lang, &test_cases, &qid))
                             }) {
                                 Ok(r) => {
                                     let mut out = format!(
@@ -921,7 +734,7 @@ fn event_loop(
                                         r.runtime_ms.map_or("?".into(), |v| v.to_string()),
                                         r.memory_mb.map_or("?".into(), |v| format!("{:.1}", v)),
                                     );
-                                    if let Some(detail) = r.error_detail { out.push('\n'); out.push_str(&detail); }
+                                    if let Some(d) = r.error_detail { out.push('\n'); out.push_str(&d); }
                                     app.output = out;
                                 }
                                 Err(e) => { app.output = format!("Error: {e}"); }
@@ -938,16 +751,14 @@ fn event_loop(
                         ) {
                             let (slug, code, qid) = p;
                             if code.trim().is_empty() {
-                                app.output = "No code — press Enter on the problem to load it first.".to_string();
+                                app.output = "No code — load the problem first.".to_string();
                                 continue;
                             }
                             let lang = app.language.clone();
                             app.output = "Submitting…".to_string();
-                            terminal.draw(|f| draw(f, app, list_state, &textarea))?;
+                            terminal.draw(|f| draw(f, app, list_state))?;
                             match tokio::task::block_in_place(|| {
-                                tokio::runtime::Handle::current().block_on(
-                                    client.submit(&slug, &code, &lang, &qid)
-                                )
+                                tokio::runtime::Handle::current().block_on(client.submit(&slug, &code, &lang, &qid))
                             }) {
                                 Ok(r) => {
                                     if r.status == "Accepted" {
@@ -977,9 +788,8 @@ fn event_loop(
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
+    if s.chars().count() <= max { s.to_string() }
+    else {
         let cut = s.char_indices().nth(max - 1).map(|(i, _)| i).unwrap_or(max);
         format!("{}…", &s[..cut])
     }
