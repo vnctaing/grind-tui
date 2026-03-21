@@ -34,7 +34,8 @@ pub struct EditorDef {
 
 fn default_editors() -> Vec<EditorDef> {
     vec![
-        EditorDef { name: "vim".into(),   key: "e".into(), command: "vim".into(),    detach: false },
+        EditorDef { name: "nvim".into(),   key: "e".into(), command: "nvim".into(),   detach: false },
+        EditorDef { name: "vim".into(),    key: "v".into(), command: "vim".into(),    detach: false },
         EditorDef { name: "Cursor".into(), key: "C".into(), command: "cursor".into(), detach: true  },
     ]
 }
