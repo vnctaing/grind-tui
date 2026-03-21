@@ -352,15 +352,23 @@ fn draw_problem_sections(f: &mut Frame, area: Rect, app: &App) {
         draw_desc_section(f, cols[0], app, app.focused_panel == Panel::Description);
     }
 
+    // Editor bar is always visible at the top of the right column
+    let editor_bar_height = 2u16;
+    let output_height = if app.output_collapsed { Constraint::Length(1) } else { Constraint::Percentage(25) };
+
     if app.code_collapsed {
-        // Only output on the right
-        draw_output_section(f, cols[1], app, app.focused_panel == Panel::Output);
-    } else {
-        let output_height = if app.output_collapsed { Constraint::Length(1) } else { Constraint::Percentage(25) };
         let right_rows = Layout::default().direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), output_height]).split(cols[1]);
-        draw_code_section(f, right_rows[0], app, app.focused_panel == Panel::Code);
+            .constraints([Constraint::Length(editor_bar_height), Constraint::Min(0)])
+            .split(cols[1]);
+        draw_editor_bar(f, right_rows[0], app);
         draw_output_section(f, right_rows[1], app, app.focused_panel == Panel::Output);
+    } else {
+        let right_rows = Layout::default().direction(Direction::Vertical)
+            .constraints([Constraint::Length(editor_bar_height), Constraint::Min(0), output_height])
+            .split(cols[1]);
+        draw_editor_bar(f, right_rows[0], app);
+        draw_code_section(f, right_rows[1], app, app.focused_panel == Panel::Code);
+        draw_output_section(f, right_rows[2], app, app.focused_panel == Panel::Output);
     }
 }
 
@@ -378,45 +386,41 @@ fn draw_desc_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
     );
 }
 
+fn draw_editor_bar(f: &mut Frame, area: Rect, app: &App) {
+    let spans: Vec<Span> = if let Some(ref name) = app.detached_editor_name {
+        // Active detached session
+        vec![
+            Span::styled(" ⟳ ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{} ", name), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled("auto-syncing on save  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("[y]", Style::default().fg(Color::Yellow)),
+            Span::styled("force sync", Style::default().fg(Color::DarkGray)),
+        ]
+    } else {
+        // No editor open — invite the user
+        let mut s = vec![
+            Span::styled(" ✏  Start coding: ", Style::default().fg(Color::DarkGray)),
+        ];
+        for ed in &app.editors {
+            s.push(Span::styled(format!("[{}]", ed.key), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+            s.push(Span::styled(format!("{} ", ed.name), Style::default().fg(Color::White)));
+        }
+        s
+    };
+
+    f.render_widget(
+        Paragraph::new(Line::from(spans))
+            .block(Block::default().borders(Borders::BOTTOM).border_style(Style::default().fg(Color::DarkGray))),
+        area,
+    );
+}
+
 fn draw_code_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
     let border_style = if focused { Style::default().fg(Color::Cyan) } else { Style::default() };
     let title = format!(" Code preview — {} ", app.language);
     let block = Block::default().borders(Borders::ALL).title(title).border_style(border_style);
     let inner = block.inner(area);
     f.render_widget(block, area);
-
-    // Invitation banner
-    let invite: Vec<Line<'static>> = {
-        let mut lines = vec![
-            Line::from(Span::styled(
-                " Open in your editor: ",
-                Style::default().fg(Color::DarkGray),
-            )),
-        ];
-        for ed in &app.editors {
-            let sync_note = if ed.detach { " (auto-sync)" } else { "" };
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("  [{}] ", ed.key),
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{}{}", ed.name, sync_note),
-                    Style::default().fg(Color::White),
-                ),
-            ]));
-        }
-        lines.push(Line::from(""));
-        lines
-    };
-
-    let banner_height = invite.len() as u16;
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(banner_height), Constraint::Min(0)])
-        .split(inner);
-
-    f.render_widget(Paragraph::new(invite), layout[0]);
 
     let highlighted: Vec<Line<'static>> = highlight_code(
         app.selected_problem().map(|p| p.code.as_str()).unwrap_or(""),
@@ -430,7 +434,7 @@ fn draw_code_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
         Paragraph::new(highlighted)
             .wrap(Wrap { trim: false })
             .scroll((app.code_scroll, 0)),
-        layout[1],
+        inner,
     );
 }
 
