@@ -3,13 +3,15 @@ mod disguise;
 mod state;
 mod tui;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use state::{AppMode, AppState};
 use tui::{App, Difficulty, ExitReason, Problem};
 
 #[derive(Parser)]
-#[command(name = "leetcode-tui", about = "LeetCode in your terminal")]
+#[command(name = "leet", about = "Metal Gear Soleetcode — LeetCode in your terminal")]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Cmd>,
     #[arg(short, long, help = "Start in disguise mode")]
     disguise: bool,
     #[arg(long, env = "LEETCODE_SESSION", help = "LeetCode session token")]
@@ -20,9 +22,70 @@ struct Cli {
     filter: Option<String>,
 }
 
+#[derive(Subcommand)]
+enum Cmd {
+    /// Interactive setup: grab your LeetCode session from Chrome and save it
+    Setup,
+}
+
+fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
+    println!();
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("  Metal Gear Soleetcode — Setup");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!();
+    println!("Step 1 — Open Chrome, go to leetcode.com and log in.");
+    println!("         Then open DevTools (Cmd+Option+I) → Console tab.");
+    println!();
+    println!("         Paste this snippet and hit Enter:");
+    println!();
+    println!("  ┌─────────────────────────────────────────────────────┐");
+    println!("  │ const c = Object.fromEntries(document.cookie        │");
+    println!("  │   .split('; ').map(x => x.split(/=(.*)/s).slice(0,2)│");
+    println!("  │   .map(([k,v]) => [k,v]));                          │");
+    println!("  │ console.log(c['LEETCODE_SESSION']);                  │");
+    println!("  │ console.log(c['csrftoken']);                         │");
+    println!("  └─────────────────────────────────────────────────────┘");
+    println!();
+    println!("Step 2 — Paste the two values below.");
+    println!();
+
+    print!("  LEETCODE_SESSION: ");
+    std::io::Write::flush(&mut std::io::stdout())?;
+    let mut session_token = String::new();
+    std::io::stdin().read_line(&mut session_token)?;
+    let session_token = session_token.trim().to_string();
+
+    print!("  csrftoken:        ");
+    std::io::Write::flush(&mut std::io::stdout())?;
+    let mut csrf_token = String::new();
+    std::io::stdin().read_line(&mut csrf_token)?;
+    let csrf_token = csrf_token.trim().to_string();
+
+    if session_token.is_empty() || csrf_token.is_empty() {
+        eprintln!("\n  ✗ Empty value — setup aborted.");
+        return Ok(());
+    }
+
+    let session = api::Session { session_token, csrf_token };
+    api::save_session(&session);
+
+    let path = state::config_dir().join("session.json");
+    println!();
+    println!("  ✓ Saved to {}", path.display());
+    println!();
+    println!("  Run `leet` to start.");
+    println!();
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+
+    if let Some(Cmd::Setup) = cli.command {
+        return run_setup();
+    }
     let mut app_state = AppState::load();
 
     let mut mode = if cli.disguise { AppMode::Disguise } else { AppMode::Classic };
