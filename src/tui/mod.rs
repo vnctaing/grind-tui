@@ -159,7 +159,7 @@ impl App {
             page: Page::List,
             desc_collapsed: false,
             output_collapsed: false,
-            code_collapsed: true,
+            code_collapsed: false,
             editors: load_editors(),
             detached_file: None,
             detached_file_mtime: None,
@@ -415,9 +415,19 @@ fn draw_editor_bar(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn draw_code_section(f: &mut Frame, area: Rect, app: &App, focused: bool) {
-    let border_style = if focused { Style::default().fg(Color::Cyan) } else { Style::default() };
-    let title = format!(" Code preview — {} ", app.language);
+fn draw_code_section(f: &mut Frame, area: Rect, app: &App, _focused: bool) {
+    // Code panel is always read-only — never interactive
+    let (title, border_style) = if let Some(ref name) = app.detached_editor_name {
+        (
+            format!(" ⟳ Live from {} — read-only  [c]hide ", name),
+            Style::default().fg(Color::DarkGray),
+        )
+    } else {
+        (
+            format!(" Code preview — read-only  [c]hide "),
+            Style::default().fg(Color::DarkGray),
+        )
+    };
     let block = Block::default().borders(Borders::ALL).title(title).border_style(border_style);
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -467,9 +477,9 @@ fn draw_problem_status(f: &mut Frame, area: Rect, app: &App) {
     let editor_keys: String = app.editors.iter()
         .map(|ed| format!("[{}]{} ", ed.key, ed.name))
         .collect();
-    let code_label = if app.code_collapsed { "[c]code▸" } else { "[c]code▾" };
+    let code_label = if app.code_collapsed { "[c]show code" } else { "[c]hide code" };
     let status = format!(
-        " [b]back  {}[r]run  [s]submit  [l]lang:{}  [p]desc  [o]output  {}  [Tab]cycle  [d]disguise  [q]quit",
+        " [b]back  {}[r]run  [s]submit  [l]lang:{}  [p]desc  [o]output  {}  [Tab]p↔o  [d]disguise  [q]quit",
         editor_keys, app.language, code_label,
     );
     f.render_widget(
@@ -514,11 +524,8 @@ fn handle_key_problem(app: &mut App, key: KeyCode) -> Action {
         KeyCode::Char('d') => Action::Exit(ExitReason::SwitchToDisguise),
         KeyCode::Tab => {
             app.focused_panel = match app.focused_panel {
-                Panel::Code => Panel::Output,
-                Panel::Output => Panel::Description,
-                Panel::Description | Panel::List => {
-                    if app.code_collapsed { Panel::Output } else { Panel::Code }
-                }
+                Panel::Output | Panel::Code => Panel::Description,
+                Panel::Description | Panel::List => Panel::Output,
             };
             Action::None
         }
@@ -671,7 +678,6 @@ fn event_loop(
                                 let path = code_file_path(&p.slug, &app.language);
                                 std::fs::write(&path, &p.code)?;
 
-                                app.code_collapsed = true;
                                 if ed.detach {
                                     let mtime = std::fs::metadata(&path).ok().and_then(|m| m.modified().ok());
                                     std::process::Command::new(&ed.command).arg(&path).spawn().ok();
