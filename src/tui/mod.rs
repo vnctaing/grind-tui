@@ -831,12 +831,14 @@ fn event_loop(
                                             app.solved_count = app.problems.iter().filter(|p| p.solved).count();
                                         }
                                     }
-                                    app.output = format!(
+                                    let mut out = format!(
                                         "Status: {}\nPassed: {}/{}\nRuntime: {}ms  Memory: {}MB",
                                         r.status, r.passed, r.total,
                                         r.runtime_ms.map_or("?".into(), |v| v.to_string()),
                                         r.memory_mb.map_or("?".into(), |v| format!("{:.1}", v)),
                                     );
+                                    if let Some(d) = r.error_detail { out.push('\n'); out.push_str(&d); }
+                                    app.output = out;
                                 }
                                 Err(e) => { app.output = format!("Error: {e}"); }
                             }
