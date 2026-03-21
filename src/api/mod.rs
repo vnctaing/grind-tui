@@ -417,10 +417,35 @@ impl LeetCodeClient {
                 _ => None,
             };
 
+            // Run-tests response: per-test comparison via code_answer + expected_code_answer + compare_result
+            let run_test_detail = {
+                let got_arr = check["code_answer"].as_array();
+                let exp_arr = check["expected_code_answer"].as_array();
+                let compare = check["compare_result"].as_str().unwrap_or("");
+                match (got_arr, exp_arr) {
+                    (Some(got), Some(exp)) if !compare.is_empty() => {
+                        let lines: Vec<String> = compare.chars().enumerate()
+                            .filter_map(|(i, c)| {
+                                let got_val = got.get(i).and_then(|v| v.as_str()).unwrap_or("?");
+                                let exp_val = exp.get(i).and_then(|v| v.as_str()).unwrap_or("?");
+                                if c == '0' {
+                                    Some(format!("✗ Test {}: got {}  expected {}", i + 1, got_val, exp_val))
+                                } else {
+                                    Some(format!("✓ Test {}: {}", i + 1, got_val))
+                                }
+                            })
+                            .collect();
+                        if lines.is_empty() { None } else { Some(lines.join("\n")) }
+                    }
+                    _ => None,
+                }
+            };
+
             let error_detail = str_field("full_runtime_error")
                 .or_else(|| str_field("runtime_error"))
                 .or_else(|| str_field("full_compile_error"))
                 .or_else(|| str_field("compile_error"))
+                .or_else(|| run_test_detail)
                 .or_else(|| {
                     match (str_field("last_testcase"), str_field("expected_output"), code_output_str) {
                         (Some(tc), Some(exp), Some(got)) => Some(format!(
