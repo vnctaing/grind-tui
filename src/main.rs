@@ -34,6 +34,24 @@ fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Metal Gear Soleetcode — Setup");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!();
+
+    if let Some(existing) = api::load_session() {
+        let preview = |s: &str| if s.len() > 20 { format!("{}…", &s[..20]) } else { s.to_string() };
+        println!("  ✓ Session already configured:");
+        println!("    LEETCODE_SESSION: {}", preview(&existing.session_token));
+        println!("    csrftoken:        {}", preview(&existing.csrf_token));
+        println!();
+        print!("  Overwrite? [y/N]: ");
+        std::io::Write::flush(&mut std::io::stdout())?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !answer.trim().eq_ignore_ascii_case("y") {
+            println!("  Kept existing session. Run `leet` to start.");
+            println!();
+            return Ok(());
+        }
+        println!();
+    }
     println!("Step 1 — Open Chrome, go to leetcode.com and log in.");
     println!("         Then open DevTools (Cmd+Option+I) → Console tab.");
     println!();
