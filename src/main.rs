@@ -52,7 +52,9 @@ fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
         }
         println!();
     }
-    println!("Step 1 — Open Chrome, go to leetcode.com and log in.");
+    println!("Step 1 — Log in to LeetCode in Chrome:");
+    println!("         https://leetcode.com/accounts/login/");
+    println!();
     println!("         Then open DevTools (Cmd+Option+I) → Console tab.");
     println!();
     println!("         Paste this one-liner and hit Enter:");

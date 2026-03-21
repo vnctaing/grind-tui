@@ -37,6 +37,7 @@ fn default_editors() -> Vec<EditorDef> {
         EditorDef { name: "nvim".into(),   key: "e".into(), command: "nvim".into(),   detach: false },
         EditorDef { name: "vim".into(),    key: "v".into(), command: "vim".into(),    detach: false },
         EditorDef { name: "Cursor".into(), key: "C".into(), command: "cursor".into(), detach: true  },
+        EditorDef { name: "VSCode".into(), key: "V".into(), command: "code".into(),   detach: true  },
     ]
 }
 
