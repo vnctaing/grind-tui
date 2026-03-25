@@ -13,13 +13,25 @@ A terminal UI for LeetCode built with Rust. Fetch problems, browse with search a
 
 ## Install
 
-Build from source:
+### Homebrew (recommended)
+
+```bash
+brew install vnctaing/tap/grind-tui
+```
+
+### Cargo
+
+```bash
+cargo install grind-tui
+```
+
+### Build from source
 
 ```bash
 git clone https://github.com/vnctaing/grind-tui.git
 cd grind-tui
 cargo build --release
-sudo cp target/release/grind-tui /usr/local/bin/grind
+sudo cp target/release/grind /usr/local/bin/grind
 ```
 
 ## Setup
@@ -101,6 +113,9 @@ Set `detach: true` for editors that spawn asynchronously (Cursor, VSCode). When 
 
 ## Requirements
 
-- Rust 1.70+
 - Active LeetCode account
 - Cookie access from Chrome DevTools
+
+## License
+
+MIT
