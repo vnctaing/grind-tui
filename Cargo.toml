@@ -6,7 +6,7 @@ description = "LeetCode in your terminal — browse, run, and submit problems fr
 license = "MIT"
 repository = "https://github.com/vnctaing/grind-tui"
 homepage = "https://github.com/vnctaing/grind-tui"
-keywords = ["leetcode", "tui", "cli", "terminal", "competitive-programming"]
+keywords = ["leetcode", "tui", "cli", "terminal"]
 categories = ["command-line-utilities", "development-tools"]
 exclude = [".github", ".omc"]
 
