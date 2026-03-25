@@ -25,7 +25,7 @@ impl Default for AppState {
 
 
 pub fn config_dir() -> std::path::PathBuf {
-    dirs::home_dir().unwrap().join(".leetcode-tui")
+    dirs::home_dir().unwrap().join(".grind-tui")
 }
 
 impl AppState {

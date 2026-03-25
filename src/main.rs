@@ -7,7 +7,7 @@ use state::AppState;
 use tui::{App, Difficulty, Problem};
 
 #[derive(Parser)]
-#[command(name = "leet", about = "Metal Gear Soleetcode — LeetCode in your terminal")]
+#[command(name = "grind", about = "grind-tui — LeetCode in your terminal")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Cmd>,
@@ -28,7 +28,7 @@ enum Cmd {
 fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
     println!();
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  Metal Gear Soleetcode — Setup");
+    println!("  grind-tui — Setup");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!();
 

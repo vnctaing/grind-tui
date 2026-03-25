@@ -1,8 +1,8 @@
-use leetcode_tui::api::{load_session, LeetCodeClient};
+use grind_tui::api::{load_session, LeetCodeClient};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let session = load_session().expect("No session found at ~/.leetcode-tui/session.json");
+    let session = load_session().expect("No session found at ~/.grind-tui/session.json");
     let client = LeetCodeClient::new(session);
 
     // Test problem 26 - Remove Duplicates from Sorted Array

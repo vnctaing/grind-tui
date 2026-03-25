@@ -527,6 +527,18 @@ pub fn save_session(session: &Session) {
     let dir = crate::state::config_dir();
     let _ = std::fs::create_dir_all(&dir);
     if let Ok(s) = serde_json::to_string_pretty(session) {
-        let _ = std::fs::write(dir.join("session.json"), s);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            let _ = std::fs::OpenOptions::new()
+                .write(true).create(true).truncate(true)
+                .mode(0o600)
+                .open(dir.join("session.json"))
+                .and_then(|mut f| { use std::io::Write; f.write_all(s.as_bytes()) });
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = std::fs::write(dir.join("session.json"), s);
+        }
     }
 }

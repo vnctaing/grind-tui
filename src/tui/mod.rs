@@ -16,7 +16,7 @@ use std::io;
 
 // ── Editor config ─────────────────────────────────────────────────────────────
 
-/// One configured editor. Stored in ~/.leetcode-tui/editors.json.
+/// One configured editor. Stored in ~/.grind-tui/editors.json.
 /// - detach = false → TUI suspends, waits for the editor to exit, reads file back
 /// - detach = true  → editor is spawned in background, TUI auto-syncs on file save
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,7 +44,7 @@ fn default_editors() -> Vec<EditorDef> {
 fn editors_config_path() -> std::path::PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-        .join(".leetcode-tui")
+        .join(".grind-tui")
         .join("editors.json")
 }
 
@@ -199,7 +199,7 @@ fn ext_for_lang(lang: &str) -> &'static str {
 }
 
 fn code_file_path(slug: &str, lang: &str) -> String {
-    let dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp")).join(".leetcode-tui");
+    let dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp")).join(".grind-tui");
     std::fs::create_dir_all(&dir).ok();
     dir.join(format!("{}.{}", slug, ext_for_lang(lang))).to_string_lossy().to_string()
 }
@@ -780,6 +780,18 @@ fn event_loop(
                 if app.page == Page::Problem {
                     if let KeyCode::Char(c) = key.code {
                         if let Some(ed) = app.editors.iter().find(|e| e.key == c.to_string()).cloned() {
+                            const ALLOWED_EDITORS: &[&str] = &[
+                                "vim", "nvim", "nano", "hx", "helix",
+                                "code", "cursor", "emacs", "micro", "vi",
+                            ];
+                            let binary = std::path::Path::new(&ed.command)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("");
+                            if !ALLOWED_EDITORS.contains(&binary) {
+                                app.output = format!("Blocked: '{}' is not a trusted editor. Edit ~/.grind-tui/editors.json to use a known editor.", ed.command);
+                                continue;
+                            }
                             if let Some(p) = app.selected_problem() {
                                 let path = code_file_path(&p.slug, &app.language);
                                 std::fs::write(&path, &p.code)?;
