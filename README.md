@@ -2,6 +2,8 @@
 
 A terminal UI for LeetCode built with Rust. Fetch problems, browse with search and filters, open solutions in your editor, run tests, and submit—all without leaving the terminal.
 
+<img src="https://github.com/user-attachments/assets/029edfa6-7dfb-47f2-9a98-8e0155312ffd" alt="Demo of the TUI" width="350">
+
 ## Features
 
 - Browse all LeetCode problems with real-time filtering by difficulty, title, or ID
