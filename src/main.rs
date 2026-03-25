@@ -23,71 +23,110 @@ struct Cli {
 enum Cmd {
     /// Interactive setup: grab your LeetCode session from Chrome and save it
     Setup,
+    /// Remove saved session credentials
+    Logout,
 }
 
-fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
+async fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
+    let r   = "\x1b[0m";
+    let b   = "\x1b[1m";
+    let dim = "\x1b[2m";
+    let cyn = "\x1b[96m";
+    let mag = "\x1b[95m";
+    let yel = "\x1b[93m";
+    let grn = "\x1b[92m";
+    let red = "\x1b[91m";
+
+    // Center the 50-char-wide block in the terminal
+    let content_width = 50usize;
+    let cols = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(80);
+    let p = " ".repeat(cols.saturating_sub(content_width) / 2);
+    let s2 = "  ";    // +2 relative indent
+    let s5 = "     "; // +5 relative indent (sub-items)
+    // Center title/subtitle within the 50-char block
+    let title_pad = " ".repeat((content_width - 29) / 2); // "░▒▓  G R I N D  —  T U I  ▓▒░" = 29
+    let sub_pad   = " ".repeat((content_width - 27) / 2); // "leetcode · in your terminal"   = 27
+
     println!();
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  grind-tui — Setup");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("{p}{mag}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓{r}");
+    println!();
+    println!("{p}{title_pad}{mag}░▒▓{r}  {b}{cyn}G R I N D  —  T U I{r}  {mag}▓▒░{r}");
+    println!("{p}{sub_pad}{dim}leetcode · in your terminal{r}");
+    println!();
+    println!("{p}{mag}▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓{r}");
     println!();
 
     if let Some(existing) = api::load_session() {
         let preview = |s: &str| if s.len() > 20 { format!("{}…", &s[..20]) } else { s.to_string() };
-        println!("  ✓ Session already configured:");
-        println!("    LEETCODE_SESSION: {}", preview(&existing.session_token));
-        println!("    csrftoken:        {}", preview(&existing.csrf_token));
+        println!("{p}{grn}✓{r} Session already configured:");
+        println!("{p}{s2}{dim}LEETCODE_SESSION:{r} {}", preview(&existing.session_token));
+        println!("{p}{s2}{dim}csrftoken:       {r} {}", preview(&existing.csrf_token));
         println!();
-        print!("  Overwrite? [y/N]: ");
+        print!("{p}{yel}Overwrite?{r} [y/N]: ");
         std::io::Write::flush(&mut std::io::stdout())?;
         let mut answer = String::new();
         std::io::stdin().read_line(&mut answer)?;
         if !answer.trim().eq_ignore_ascii_case("y") {
-            println!("  Kept existing session. Run `leet` to start.");
+            println!("{p}{dim}Kept existing session.{r}  Run {b}{cyn}grind{r} to start.");
             println!();
             return Ok(());
         }
         println!();
     }
-    println!("Step 1 — Log in to LeetCode in Chrome:");
-    println!("         https://leetcode.com/accounts/login/");
+
+    println!("{p}{b}{yel}①{r}  Log in to LeetCode in Chrome.");
     println!();
-    println!("         Then open DevTools (Cmd+Option+I) → Console tab.");
+    println!("{p}{b}{yel}②{r}  Open DevTools {dim}→{r} {cyn}Cmd+Option+I{r}");
     println!();
-    println!("         Paste this one-liner and hit Enter:");
+    println!("{p}{b}{yel}③{r}  Navigate to:");
+    println!("{p}{s5}{cyn}Application{r} {dim}→{r} {cyn}Cookies{r} {dim}→{r} {cyn}https://leetcode.com{r}");
     println!();
-    println!("  ['LEETCODE_SESSION','csrftoken'].forEach(k=>{{const c=document.cookie.split('; ').find(x=>x.startsWith(k+'='));console.log(k+': '+(c?c.slice(k.length+1):'NOT FOUND'))}})");
+    println!("{p}{b}{yel}④{r}  Find and copy these two cookie values:");
+    println!("{p}{s5}{b}{cyn}LEETCODE_SESSION{r}");
+    println!("{p}{s5}{b}{cyn}csrftoken{r}");
     println!();
-    println!("         It should print two lines — one per token.");
-    println!();
-    println!("Step 2 — Copy each value (after the colon) and paste below.");
+    println!("{p}{dim}────────────────────────────────────────{r}");
     println!();
 
-    print!("  LEETCODE_SESSION: ");
+    print!("{p}{yel}LEETCODE_SESSION{r}  › ");
     std::io::Write::flush(&mut std::io::stdout())?;
     let mut session_token = String::new();
     std::io::stdin().read_line(&mut session_token)?;
     let session_token = session_token.trim().to_string();
 
-    print!("  csrftoken:        ");
+    print!("{p}{yel}csrftoken        {r} › ");
     std::io::Write::flush(&mut std::io::stdout())?;
     let mut csrf_token = String::new();
     std::io::stdin().read_line(&mut csrf_token)?;
     let csrf_token = csrf_token.trim().to_string();
 
     if session_token.is_empty() || csrf_token.is_empty() {
-        eprintln!("\n  ✗ Empty value — setup aborted.");
+        eprintln!("\n{p}{red}✗{r} Empty value — setup aborted.");
         return Ok(());
     }
 
     let session = api::Session { session_token, csrf_token };
     api::save_session(&session);
 
+    println!();
+    print!("{p}Verifying session{dim}…{r}  ");
+    std::io::Write::flush(&mut std::io::stdout())?;
+    let client = api::LeetCodeClient::new(session);
+    match client.verify_session().await {
+        Ok(username) => {
+            println!("{grn}✓{r}  signed in as {b}{cyn}{username}{r}");
+        }
+        Err(_) => {
+            println!("{red}✗{r}  tokens invalid or expired.");
+            println!("{p}{s5}Run {b}{cyn}grind setup{r} again to re-enter your tokens.");
+        }
+    }
+
     let path = state::config_dir().join("session.json");
     println!();
-    println!("  ✓ Saved to {}", path.display());
+    println!("{p}{dim}Saved to {}{r}", path.display());
     println!();
-    println!("  Run `leet` to start.");
+    println!("{p}Run {b}{cyn}grind{r} to start grinding. {mag}▓▒░{r}");
     println!();
     Ok(())
 }
@@ -97,7 +136,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     if let Some(Cmd::Setup) = cli.command {
-        return run_setup();
+        return run_setup().await;
+    }
+    if let Some(Cmd::Logout) = cli.command {
+        let path = state::config_dir().join("session.json");
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+            println!("  Logged out. Session removed.");
+        } else {
+            println!("  No session found.");
+        }
+        return Ok(());
     }
     let mut app_state = AppState::load();
 
@@ -106,6 +155,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         session_token: s,
         csrf_token: c,
     }).or_else(api::load_session);
+
+    // No session found — run interactive setup before launching the TUI
+    let session = if session.is_none() {
+        run_setup().await?;
+        api::load_session()
+    } else {
+        session
+    };
 
     // Build TUI App — optionally load problems via API
     let mut app = App::new();

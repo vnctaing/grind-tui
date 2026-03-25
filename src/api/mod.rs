@@ -130,6 +130,19 @@ struct SubmitResponse {
     interpret_id: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct UserStatusData {
+    #[serde(rename = "userStatus")]
+    user_status: UserStatus,
+}
+
+#[derive(Deserialize)]
+struct UserStatus {
+    username: String,
+    #[serde(rename = "isSignedIn")]
+    is_signed_in: bool,
+}
+
 // CheckResponse is parsed as raw Value to handle LeetCode's inconsistent field types
 
 pub struct LeetCodeClient {
@@ -165,6 +178,36 @@ impl LeetCodeClient {
             .expect("Failed to build HTTP client");
 
         Self { client }
+    }
+
+    pub async fn verify_session(&self) -> Result<String, ApiError> {
+        let body = serde_json::json!({
+            "query": "query { userStatus { username isSignedIn } }",
+            "operationName": "userStatus"
+        });
+
+        let resp = self
+            .client
+            .post("https://leetcode.com/graphql")
+            .header(CONTENT_TYPE, "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        if resp.status() == 403 {
+            return Err(ApiError::AuthFailed);
+        }
+
+        let gql: GraphqlResponse<UserStatusData> = resp
+            .json()
+            .await
+            .map_err(|e| ApiError::Parse(e.to_string()))?;
+
+        if !gql.data.user_status.is_signed_in {
+            return Err(ApiError::AuthFailed);
+        }
+
+        Ok(gql.data.user_status.username)
     }
 
     pub async fn get_all_problems(&self) -> Result<Vec<Problem>, ApiError> {
