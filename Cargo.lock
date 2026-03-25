@@ -492,6 +492,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "grind-tui"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "crossterm",
+ "dirs",
+ "ratatui",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "h2"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -851,21 +866,6 @@ name = "leb128fmt"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
-
-[[package]]
-name = "leetcode-tui"
-version = "0.1.0"
-dependencies = [
- "clap",
- "crossterm",
- "dirs",
- "ratatui",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
-]
 
 [[package]]
 name = "libc"
