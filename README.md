@@ -16,7 +16,8 @@ A terminal UI for LeetCode built with Rust. Fetch problems, browse with search a
 ### Homebrew (recommended)
 
 ```bash
-brew install vnctaing/tap/grind-tui
+brew tap vnctaing/tap
+brew install grind-tui
 ```
 
 ### Cargo
