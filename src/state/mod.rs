@@ -23,11 +23,6 @@ impl Default for AppState {
     }
 }
 
-#[derive(Clone, PartialEq)]
-pub enum AppMode {
-    Classic,
-    Disguise,
-}
 
 pub fn config_dir() -> std::path::PathBuf {
     dirs::home_dir().unwrap().join(".leetcode-tui")

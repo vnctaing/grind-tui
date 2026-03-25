@@ -102,7 +102,7 @@ pub enum Panel { List, Description, Code, Output }
 pub enum Page { List, Problem }
 
 #[derive(Debug)]
-pub enum ExitReason { Quit, SwitchToDisguise, SwitchToClassic }
+pub enum ExitReason { Quit }
 
 enum Action {
     Exit(ExitReason),
@@ -110,6 +110,7 @@ enum Action {
     RunTests,
     Submit,
     SyncDetached,
+    CopyCommand,
     None,
 }
 
@@ -318,7 +319,7 @@ fn draw_list_full(f: &mut Frame, area: Rect, app: &App, list_state: &mut ListSta
 fn draw_list_status(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(
         Paragraph::new(format!(
-            " [/]search  [Enter]open  [d]disguise  [q]quit  │  Problems: {}  Solved: {}",
+            " [/]search  [Enter]open  [q]quit  │  Problems: {}  Solved: {}",
             app.filtered.len(), app.solved_count,
         )).style(Style::default().bg(Color::DarkGray).fg(Color::White)),
         area,
@@ -425,6 +426,8 @@ fn draw_editor_bar(f: &mut Frame, area: Rect, app: &App) {
         Line::from(vec![
             Span::styled(" 💡 New tab: ", Style::default().fg(Color::DarkGray)),
             Span::styled(format!("{} {}", cmd, file_path), Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
+            Span::styled("  [Y]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled("yank", Style::default().fg(Color::DarkGray)),
         ])
     };
 
@@ -562,7 +565,7 @@ fn draw_problem_status(f: &mut Frame, area: Rect, app: &App) {
         .collect();
     let code_label = if app.code_collapsed { "[c]show code" } else { "[c]hide code" };
     let status = format!(
-        " [b]back  {}[r]run  [s]submit  [l]lang:{}  [p]desc  [o]output  {}  [Tab]p↔o  [d]disguise  [q]quit",
+        " [b]back  {}[r]run  [s]submit  [l]lang:{}  [p]desc  [o]output  {}  [Tab]p↔o  [q]quit",
         editor_keys, app.language, code_label,
     );
     f.render_widget(
@@ -586,7 +589,6 @@ fn handle_key_list(app: &mut App, key: KeyCode) -> Action {
     }
     match key {
         KeyCode::Char('q') => Action::Exit(ExitReason::Quit),
-        KeyCode::Char('d') => Action::Exit(ExitReason::SwitchToDisguise),
         KeyCode::Char('/') => { app.searching = true; app.search_query.clear(); app.rebuild_filtered(); Action::None }
         KeyCode::Enter => Action::LoadProblem,
         KeyCode::Char('j') | KeyCode::Down => {
@@ -604,7 +606,6 @@ fn handle_key_list(app: &mut App, key: KeyCode) -> Action {
 fn handle_key_problem(app: &mut App, key: KeyCode) -> Action {
     match key {
         KeyCode::Char('q') => Action::Exit(ExitReason::Quit),
-        KeyCode::Char('d') => Action::Exit(ExitReason::SwitchToDisguise),
         KeyCode::Tab => {
             app.focused_panel = match app.focused_panel {
                 Panel::Output | Panel::Code => Panel::Description,
@@ -612,7 +613,13 @@ fn handle_key_problem(app: &mut App, key: KeyCode) -> Action {
             };
             Action::None
         }
-        KeyCode::Char('b') => { app.page = Page::List; Action::None }
+        KeyCode::Char('b') => {
+            app.page = Page::List;
+            app.detached_file = None;
+            app.detached_file_mtime = None;
+            app.detached_editor_name = None;
+            Action::None
+        }
         KeyCode::Char('c') => { app.code_collapsed = !app.code_collapsed; Action::None }
         KeyCode::Char('p') => {
             if app.desc_collapsed { app.desc_collapsed = false; app.focused_panel = Panel::Description; }
@@ -627,6 +634,7 @@ fn handle_key_problem(app: &mut App, key: KeyCode) -> Action {
             Action::None
         }
         KeyCode::Char('y') => Action::SyncDetached,
+        KeyCode::Char('Y') => Action::CopyCommand,
         KeyCode::Char('r') => Action::RunTests,
         KeyCode::Char('s') => Action::Submit,
         KeyCode::Char('l') => {
@@ -635,8 +643,23 @@ fn handle_key_problem(app: &mut App, key: KeyCode) -> Action {
             let new_lang = LANGS[(cur + 1) % LANGS.len()].to_string();
             app.language = new_lang.clone();
             if let Some(p) = app.selected_problem_mut() {
-                if let Some(starter) = p.starter_code.get(&new_lang).cloned() { p.code = starter; }
+                let path = code_file_path(&p.slug, &new_lang);
+                if let Ok(saved) = std::fs::read_to_string(&path) {
+                    if !saved.trim().is_empty() {
+                        p.code = saved;
+                    } else if let Some(starter) = p.starter_code.get(&new_lang).cloned() {
+                        p.code = starter;
+                        std::fs::write(&path, &p.code).ok();
+                    }
+                } else if let Some(starter) = p.starter_code.get(&new_lang).cloned() {
+                    p.code = starter;
+                    std::fs::write(&path, &p.code).ok();
+                }
+                let mtime = std::fs::metadata(&path).ok().and_then(|m| m.modified().ok());
+                app.detached_file = Some(path);
+                app.detached_file_mtime = mtime;
             }
+            app.code_scroll = 0;
             Action::None
         }
         KeyCode::Char('j') | KeyCode::Down => {
@@ -792,6 +815,25 @@ fn event_loop(
                     Action::None => {}
                     Action::Exit(reason) => return Ok(reason),
 
+                    Action::CopyCommand => {
+                        if let Some(p) = app.selected_problem() {
+                            let path = code_file_path(&p.slug, &app.language);
+                            let cmd = format!("nvim {}", path);
+                            let copied = std::process::Command::new("pbcopy")
+                                .stdin(std::process::Stdio::piped())
+                                .spawn()
+                                .and_then(|mut child| {
+                                    use std::io::Write;
+                                    child.stdin.as_mut().unwrap().write_all(cmd.as_bytes())?;
+                                    child.wait()
+                                });
+                            app.output = match copied {
+                                Ok(_) => format!("Copied: {}", cmd),
+                                Err(_) => format!("Copy failed. Command: {}", cmd),
+                            };
+                        }
+                    }
+
                     Action::SyncDetached => {
                         if let Some(ref path) = app.detached_file.clone() {
                             match std::fs::read_to_string(path) {
@@ -827,8 +869,21 @@ fn event_loop(
                                                 .cloned().unwrap_or_default();
                                         }
                                         app.desc_scroll = 0;
-                                        app.output = "Problem loaded.".to_string();
                                         app.page = Page::Problem;
+                                        if let Some(p) = app.selected_problem_mut() {
+                                            let path = code_file_path(&p.slug, &lang);
+                                            if let Ok(saved) = std::fs::read_to_string(&path) {
+                                                if !saved.trim().is_empty() {
+                                                    p.code = saved;
+                                                }
+                                            } else {
+                                                std::fs::write(&path, &p.code).ok();
+                                            }
+                                            let mtime = std::fs::metadata(&path).ok().and_then(|m| m.modified().ok());
+                                            app.detached_file = Some(path);
+                                            app.detached_file_mtime = mtime;
+                                        }
+                                        app.output = "Problem loaded.".to_string();
                                     }
                                     Err(e) => { app.output = format!("Error: {e}"); }
                                 }

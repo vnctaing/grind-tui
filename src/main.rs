@@ -1,19 +1,16 @@
 mod api;
-mod disguise;
 mod state;
 mod tui;
 
 use clap::{Parser, Subcommand};
-use state::{AppMode, AppState};
-use tui::{App, Difficulty, ExitReason, Problem};
+use state::AppState;
+use tui::{App, Difficulty, Problem};
 
 #[derive(Parser)]
 #[command(name = "leet", about = "Metal Gear Soleetcode — LeetCode in your terminal")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Cmd>,
-    #[arg(short, long, help = "Start in disguise mode")]
-    disguise: bool,
     #[arg(long, env = "LEETCODE_SESSION", help = "LeetCode session token")]
     session: Option<String>,
     #[arg(long, env = "LEETCODE_CSRF", help = "CSRF token")]
@@ -103,8 +100,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_setup();
     }
     let mut app_state = AppState::load();
-
-    let mut mode = if cli.disguise { AppMode::Disguise } else { AppMode::Classic };
 
     // Build API client if session is available
     let session = cli.session.zip(cli.csrf).map(|(s, c)| api::Session {
@@ -199,40 +194,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     app.rebuild_filtered();
 
-    // Main mode loop — switch between classic and disguise
-    loop {
-        match mode {
-            AppMode::Classic => {
-                match tui::run(&mut app).await? {
-                    ExitReason::Quit => break,
-                    ExitReason::SwitchToDisguise => {
-                        mode = AppMode::Disguise;
-                        continue;
-                    }
-                    ExitReason::SwitchToClassic => continue,
-                }
-            }
-            AppMode::Disguise => {
-                match disguise::run(&mut app).await? {
-                    ExitReason::Quit => break,
-                    ExitReason::SwitchToClassic => {
-                        mode = AppMode::Classic;
-                        continue;
-                    }
-                    _ => break,
-                }
-            }
+    if let Some(last_id) = app_state.last_problem_id {
+        if let Some(idx) = app.filtered.iter().position(|&i| app.problems[i].id == last_id) {
+            app.selected = idx;
         }
     }
 
+    tui::run(&mut app).await?;
+
     // Persist state
     app_state.language = app.language.clone();
-    app_state.solved = app
-        .problems
-        .iter()
-        .filter(|p| p.solved)
-        .map(|p| p.id)
-        .collect();
+    app_state.solved = app.problems.iter().filter(|p| p.solved).map(|p| p.id).collect();
+    app_state.last_problem_id = app.selected_problem().map(|p| p.id);
     app_state.save();
 
     Ok(())
