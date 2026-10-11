@@ -10,7 +10,7 @@ mod theme;
 pub use app::{App, ListFilter};
 pub use editor::load_editors;
 
-use app::{handle_key, Action, CodeMode, Page};
+use app::{handle_key, handle_paste, Action, Page};
 use crossterm::{
     event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind, MouseEventKind},
     execute,
@@ -22,7 +22,7 @@ use problem_view::draw_problem_page;
 use ratatui::{backend::CrosstermBackend, style::Style, Frame, Terminal};
 use theme::t;
 use std::io;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 // ── Drawing ───────────────────────────────────────────────────────────────────
 
@@ -94,13 +94,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
                     }
                 }
             }
-            Event::Paste(text) => {
-                if let Page::Problem(view) = &mut app.page
-                    && view.mode == CodeMode::Edit
-                {
-                    view.editor.paste(&text, Instant::now());
-                }
-            }
+            Event::Paste(text) => handle_paste(app, &text),
             Event::Key(key) => {
                 if key.kind != KeyEventKind::Press { continue; }
                 match handle_key(app, key) {
@@ -109,14 +103,6 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
                     Action::LaunchEditor(ed) => launch_editor(terminal, app, &ed)?,
                     Action::CopyCommand => copy_command(app),
                     Action::Clipboard(text) => { system_copy(&text).ok(); }
-                    Action::SyncDetached => {
-                        if let Page::Problem(view) = &mut app.page {
-                            view.message = match view.reload() {
-                                Ok(()) => "Synced.".to_string(),
-                                Err(e) => format!("Sync error: {e}"),
-                            };
-                        }
-                    }
                 }
             }
             _ => {}
@@ -138,7 +124,7 @@ fn launch_editor(
         suspend_tui(terminal)?;
         std::process::Command::new(&ed.command).arg(&view.path).status().ok();
         resume_tui(terminal)?;
-        view.reload().ok();
+        view.reload(&format!("Reloaded from {}.", ed.name));
     }
     Ok(())
 }

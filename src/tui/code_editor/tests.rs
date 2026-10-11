@@ -475,3 +475,16 @@ fn contents_keep_the_files_crlf_line_endings() {
     assert_eq!(e.text(), "a\nb\nc");
     assert_eq!(e.ed.contents(), "a\r\nb\r\nc");
 }
+
+#[test]
+fn discard_restores_the_saved_text_with_its_line_endings() {
+    let mut e = py("a\r\nb");
+    e.press(KeyCode::Enter);
+    e.type_str("x");
+    assert!(e.ed.is_dirty());
+    e.ed.discard();
+    assert!(!e.ed.is_dirty());
+    assert_eq!(e.ed.contents(), "a\r\nb");
+    e.ctrl('z');
+    assert_eq!(e.text(), "a\nb");
+}

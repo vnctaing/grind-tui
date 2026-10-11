@@ -18,21 +18,39 @@ pub struct EditRecord {
     pub inserted: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineEnding {
+    Lf,
+    Crlf,
+}
+
+impl LineEnding {
+    pub fn label(self) -> &'static str {
+        match self {
+            LineEnding::Lf => "LF",
+            LineEnding::Crlf => "CRLF",
+        }
+    }
+}
+
 /// Every offset is a byte offset into `text` that lies on a char boundary.
-/// `text` always uses `\n`; `crlf` remembers a file that used `\r\n` so
-/// `contents` writes it back the same way.
+/// `text` always uses `\n`; `ending` is the file's dominant line ending, which
+/// `contents` writes back. `mixed` records that the file used both.
 pub struct Buffer {
     text: String,
     line_starts: Vec<usize>,
-    crlf: bool,
+    ending: LineEnding,
+    mixed: bool,
 }
 
 impl Buffer {
     pub fn new(text: &str) -> Buffer {
-        let crlf = text.contains("\r\n");
+        let crlf = text.matches("\r\n").count();
+        let lf = text.matches('\n').count() - crlf;
+        let ending = if crlf > lf { LineEnding::Crlf } else { LineEnding::Lf };
         let text = text.replace("\r\n", "\n");
         let line_starts = line_starts(&text);
-        Buffer { text, line_starts, crlf }
+        Buffer { text, line_starts, ending, mixed: crlf > 0 && lf > 0 }
     }
 
     pub fn text(&self) -> &str {
@@ -40,11 +58,15 @@ impl Buffer {
     }
 
     pub fn contents(&self) -> Cow<'_, str> {
-        if self.crlf {
-            Cow::Owned(self.text.replace('\n', "\r\n"))
-        } else {
-            Cow::Borrowed(&self.text)
+        match self.ending {
+            LineEnding::Lf => Cow::Borrowed(&self.text),
+            LineEnding::Crlf => Cow::Owned(self.text.replace('\n', "\r\n")),
         }
+    }
+
+    /// The ending a file with both kinds is normalized to on save.
+    pub fn mixed_endings(&self) -> Option<LineEnding> {
+        self.mixed.then_some(self.ending)
     }
 
     pub fn len(&self) -> usize {
@@ -176,7 +198,19 @@ mod tests {
         assert_eq!(b.text(), "a\nb");
         b.edit(1..1, "\nx");
         assert_eq!(b.contents(), "a\r\nx\r\nb");
+        assert_eq!(b.mixed_endings(), None);
         assert_eq!(Buffer::new("a\nb").contents(), "a\nb");
+    }
+
+    #[test]
+    fn mixed_endings_normalize_to_the_dominant_one() {
+        let lf = Buffer::new("a\nb\r\nc\n");
+        assert_eq!(lf.mixed_endings(), Some(LineEnding::Lf));
+        assert_eq!(lf.contents(), "a\nb\nc\n");
+        let crlf = Buffer::new("a\r\nb\nc\r\n");
+        assert_eq!(crlf.mixed_endings(), Some(LineEnding::Crlf));
+        assert_eq!(crlf.contents(), "a\r\nb\r\nc\r\n");
+        assert_eq!(Buffer::new("a\nb\n").mixed_endings(), None);
     }
 
     #[test]

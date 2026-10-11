@@ -44,7 +44,21 @@ pub struct Scroll { pub desc: u16, pub output: u16 }
 pub enum CodeMode { Navigate, Edit }
 
 const CONFLICT: &str = "File changed on disk while you have unsaved edits.\nCtrl-S overwrites it, Ctrl-R twice reloads it (discards your edits).";
-const CONFIRM_RELOAD: &str = "Unsaved changes, press Ctrl-R again to discard them and reload.";
+
+/// A key that discards unsaved edits, pressed once. The same key again
+/// confirms; any other input cancels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Confirm { Reload, Sync, Discard }
+
+impl Confirm {
+    fn prompt(self) -> &'static str {
+        match self {
+            Confirm::Reload => "Unsaved changes, press Ctrl-R again to discard them and reload.",
+            Confirm::Sync => "Unsaved changes, press y again to discard them and reload.",
+            Confirm::Discard => "Unsaved changes will be lost, press Ctrl-Q again.",
+        }
+    }
+}
 
 pub struct ProblemView {
     pub idx: usize,
@@ -57,8 +71,7 @@ pub struct ProblemView {
     /// Disk mtime of an external change the user was told about while holding
     /// unsaved edits. A save overwrites only a change the user has seen.
     pub conflict: Option<SystemTime>,
-    /// Set by a Ctrl-R refused over unsaved edits; the next Ctrl-R discards them.
-    pub reload_armed: bool,
+    pub armed: Option<Confirm>,
     pub focused: Panel,
     pub collapsed: Collapsed,
     pub scroll: Scroll,
@@ -74,28 +87,54 @@ impl ProblemView {
     }
 
     pub fn new(idx: usize, path: PathBuf, code: &str, lang: Lang) -> ProblemView {
-        ProblemView {
+        let mut view = ProblemView {
             idx,
             editor: CodeEditor::new(code, lang),
             mode: CodeMode::Navigate,
             mtime: modified(&path),
             path,
             conflict: None,
-            reload_armed: false,
+            armed: None,
             focused: Panel::Code,
             collapsed: Collapsed::default(),
             scroll: Scroll::default(),
             detached: None,
             message: String::new(),
+        };
+        view.loaded("");
+        view
+    }
+
+    /// Reports `done`, plus a note when the file mixed line endings.
+    fn loaded(&mut self, done: &str) {
+        let note = self.editor.mixed_endings()
+            .map(|e| format!("Mixed line endings, normalized to {} on save.", e.label()));
+        self.message = match note {
+            Some(note) if done.is_empty() => note,
+            Some(note) => format!("{done}\n{note}"),
+            None => done.to_string(),
+        };
+    }
+
+    pub fn reload(&mut self, done: &str) -> bool {
+        match std::fs::read_to_string(&self.path) {
+            Ok(text) => {
+                self.editor.reload(&text);
+                self.mtime = modified(&self.path);
+                self.conflict = None;
+                self.loaded(done);
+                true
+            }
+            Err(e) => {
+                self.message = format!("Reload failed: {e}");
+                false
+            }
         }
     }
 
-    pub fn reload(&mut self) -> std::io::Result<()> {
-        let text = std::fs::read_to_string(&self.path)?;
-        self.editor.reload(&text);
-        self.mtime = modified(&self.path);
-        self.conflict = None;
-        Ok(())
+    fn arm(&mut self, confirm: Confirm) {
+        self.armed = Some(confirm);
+        self.message = confirm.prompt().to_string();
     }
 
     /// Pulls in an external change, unless that would discard unsaved edits.
@@ -109,13 +148,19 @@ impl ProblemView {
                 self.conflict = disk;
                 self.message = CONFLICT.to_string();
             }
-        } else if self.reload().is_ok() {
-            let name = self.detached.as_deref().unwrap_or("disk");
-            self.message = format!("Auto-synced from {name}.");
+        } else {
+            let done = format!("Auto-synced from {}.", self.detached.as_deref().unwrap_or("disk"));
+            self.reload(&done);
         }
     }
 
+    /// A clean buffer is never written, so saving cannot rewrite a file the
+    /// user did not change, such as one with mixed line endings.
     pub fn save(&mut self) -> bool {
+        if !self.editor.is_dirty() {
+            self.message = "No changes to save.".to_string();
+            return true;
+        }
         let disk = modified(&self.path);
         if self.is_stale() && self.conflict != disk {
             self.conflict = disk;
@@ -155,6 +200,16 @@ impl ProblemView {
                 return;
             }
         }
+        self.mode = CodeMode::Navigate;
+    }
+
+    /// The way out when neither saving nor reloading works.
+    pub fn discard(&mut self) {
+        if self.editor.is_dirty() {
+            self.editor.discard();
+            self.message = "Discarded unsaved changes.".to_string();
+        }
+        self.conflict = None;
         self.mode = CodeMode::Navigate;
     }
 
@@ -200,7 +255,7 @@ fn load_code(problem: &Problem, lang: Lang) -> (PathBuf, String) {
 
 pub enum Page { List, Problem(ProblemView) }
 
-pub enum Action { Quit, LaunchEditor(EditorDef), SyncDetached, CopyCommand, Clipboard(String), None }
+pub enum Action { Quit, LaunchEditor(EditorDef), CopyCommand, Clipboard(String), None }
 
 pub struct App {
     pub catalog: Catalog,
@@ -300,6 +355,8 @@ impl App {
             view.mtime = modified(&path);
             view.path = path;
             view.conflict = None;
+            view.armed = None;
+            view.loaded("");
         }
     }
 
@@ -338,6 +395,7 @@ pub fn problem_keys(app: &App, view: &ProblemView) -> Vec<(&'static str, &'stati
             ("^C/^X/^V", "copy/cut/paste"),
             ("^A", "all"),
             ("^R", "reload"),
+            ("^Q^Q", "discard"),
         ];
     }
     vec![
@@ -365,23 +423,31 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
     }
 }
 
+pub fn handle_paste(app: &mut App, text: &str) {
+    let Page::Problem(view) = &mut app.page else { return };
+    view.armed = None;
+    if view.mode == CodeMode::Edit {
+        view.editor.paste(text, Instant::now());
+    }
+}
+
 fn handle_edit_key(view: &mut ProblemView, key: KeyEvent) -> Action {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::ALT);
-    let reload = ctrl && matches!(key.code, KeyCode::Char('r' | 'R'));
-    let armed = std::mem::take(&mut view.reload_armed);
-    match key.code {
-        KeyCode::Esc => view.stop_editing(),
-        _ if reload && view.editor.is_dirty() && !armed => {
-            view.reload_armed = true;
-            view.message = CONFIRM_RELOAD.to_string();
-        }
-        _ if reload => {
-            view.message = match view.reload() {
-                Ok(()) => "Reloaded from disk.".to_string(),
-                Err(e) => format!("Reload failed: {e}"),
-            };
-        }
-        _ => match view.editor.handle_key(key, Instant::now()) {
+    let confirm = match key.code {
+        KeyCode::Char('r' | 'R') if ctrl => Some(Confirm::Reload),
+        KeyCode::Char('q' | 'Q') if ctrl => Some(Confirm::Discard),
+        _ => None,
+    };
+    let armed = view.armed.take();
+    if key.code == KeyCode::Esc {
+        view.stop_editing();
+        return Action::None;
+    }
+    match confirm {
+        Some(c) if view.editor.is_dirty() && armed != Some(c) => view.arm(c),
+        Some(Confirm::Discard) => view.discard(),
+        Some(Confirm::Reload | Confirm::Sync) => { view.reload("Reloaded from disk."); }
+        None => match view.editor.handle_key(key, Instant::now()) {
             Effect::None => {}
             Effect::Save => { view.save(); }
             Effect::Copy(text) => return Action::Clipboard(text),
@@ -424,11 +490,18 @@ fn handle_list_key(app: &mut App, key: KeyCode) -> Action {
 fn handle_problem_key(app: &mut App, key: KeyCode) -> Action {
     let launches = |c: char| app.editors.iter().any(|e| e.key == c.to_string());
     let would_drop_edits = matches!(key, KeyCode::Char(c) if matches!(c, 'q' | 'b' | 'l') || launches(c));
-    if let Page::Problem(view) = &mut app.page
-        && would_drop_edits
-        && view.editor.is_dirty()
-    {
-        view.message = "Unsaved edits. Enter then Ctrl-S saves them, y reloads from disk and discards them.".to_string();
+    let Page::Problem(view) = &mut app.page else { return Action::None };
+    let armed = view.armed.take();
+    if would_drop_edits && view.editor.is_dirty() {
+        view.message = "Unsaved edits. Enter then Ctrl-S saves them, y twice reloads from disk and discards them.".to_string();
+        return Action::None;
+    }
+    if key == KeyCode::Char('y') {
+        if view.editor.is_dirty() && armed != Some(Confirm::Sync) {
+            view.arm(Confirm::Sync);
+        } else {
+            view.reload("Synced.");
+        }
         return Action::None;
     }
     if let KeyCode::Char(c) = key {
@@ -447,7 +520,6 @@ fn handle_problem_key(app: &mut App, key: KeyCode) -> Action {
         KeyCode::Char('b') => { app.page = Page::List; return Action::None; }
         KeyCode::Char('x') => { app.toggle_solved(); return Action::None; }
         KeyCode::Char('l') => { app.cycle_lang(); return Action::None; }
-        KeyCode::Char('y') => return Action::SyncDetached,
         KeyCode::Char('Y') => return Action::CopyCommand,
         _ => {}
     }
@@ -761,11 +833,8 @@ mod tests {
     #[test]
     fn dirty_buffer_blocks_language_switch_and_external_editors() {
         let dir = TempDir::new("guard");
-        let (mut app, path) = app_with_file(&dir, "mine");
+        let (mut app, path) = dirty_in_navigate(&dir);
         app.editors = vec![EditorDef { name: "nvim".into(), key: "e".into(), command: "nvim".into(), detach: false }];
-        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        press(&mut app, "!");
-        view(&mut app).mode = CodeMode::Navigate;
         let lang = app.progress.language;
 
         press(&mut app, "l");
@@ -779,6 +848,119 @@ mod tests {
         assert!(matches!(key(&mut app, KeyCode::Char('e'), KeyModifiers::NONE), Action::LaunchEditor(_)));
     }
 
+    /// No key path leaves edit mode with unsaved edits, so the Navigate-mode
+    /// guards are reached by switching the mode directly.
+    fn dirty_in_navigate(dir: &TempDir) -> (App, PathBuf) {
+        let (mut app, path) = app_with_file(dir, "mine");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        press(&mut app, "!");
+        view(&mut app).mode = CodeMode::Navigate;
+        (app, path)
+    }
+
+    #[test]
+    fn quit_and_back_are_blocked_while_dirty() {
+        let dir = TempDir::new("quitguard");
+        let (mut app, _) = dirty_in_navigate(&dir);
+        for c in ['q', 'b'] {
+            assert!(matches!(key(&mut app, KeyCode::Char(c), KeyModifiers::NONE), Action::None), "{c}");
+            assert!(matches!(app.page, Page::Problem(_)), "{c} left the page");
+            assert_eq!(view(&mut app).editor.text(), "!mine");
+            assert!(view(&mut app).message.contains("Unsaved"));
+        }
+    }
+
+    #[test]
+    fn y_over_unsaved_edits_needs_a_second_press() {
+        let dir = TempDir::new("sync");
+        let (mut app, path) = dirty_in_navigate(&dir);
+        std::fs::write(&path, "theirs").unwrap();
+
+        press(&mut app, "y");
+        assert_eq!(view(&mut app).editor.text(), "!mine");
+        assert!(view(&mut app).message.contains("y again"));
+        press(&mut app, "jy");
+        assert_eq!(view(&mut app).editor.text(), "!mine");
+
+        press(&mut app, "y");
+        assert_eq!(view(&mut app).editor.text(), "theirs");
+        assert!(!view(&mut app).editor.is_dirty());
+    }
+
+    #[test]
+    fn paste_cancels_an_armed_reload() {
+        let dir = TempDir::new("pastearm");
+        let (mut app, path) = app_with_file(&dir, "mine");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        press(&mut app, "!");
+        std::fs::write(&path, "theirs").unwrap();
+
+        key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        handle_paste(&mut app, "z");
+        key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert_eq!(view(&mut app).editor.text(), "!zmine");
+        assert!(view(&mut app).message.contains("Ctrl-R again"));
+    }
+
+    #[test]
+    fn ctrl_q_twice_leaves_edit_mode_when_save_and_reload_both_fail() {
+        let dir = TempDir::new("deadend");
+        let (mut app, path) = app_with_file(&dir, "mine");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        press(&mut app, "!");
+        std::fs::remove_dir_all(&dir.0).unwrap();
+
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(view(&mut app).message.contains("Save failed"));
+        key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert!(view(&mut app).message.contains("Reload failed"));
+        assert_eq!(view(&mut app).mode, CodeMode::Edit);
+
+        key(&mut app, KeyCode::Char('q'), KeyModifiers::CONTROL);
+        assert!(view(&mut app).message.contains("press Ctrl-Q again"));
+        key(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('q'), KeyModifiers::CONTROL);
+        assert_eq!(view(&mut app).mode, CodeMode::Edit);
+        assert_eq!(view(&mut app).editor.text(), "!mine");
+
+        key(&mut app, KeyCode::Char('q'), KeyModifiers::CONTROL);
+        let v = view(&mut app);
+        assert_eq!(v.mode, CodeMode::Navigate);
+        assert!(!v.editor.is_dirty());
+        assert_eq!(v.editor.text(), "mine");
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn mixed_line_endings_are_written_only_after_an_edit() {
+        let dir = TempDir::new("mixed");
+        let mixed = "a\nb\r\nc\n";
+        let (mut app, path) = app_with_file(&dir, mixed);
+        assert!(view(&mut app).message.contains("Mixed line endings, normalized to LF on save"));
+
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(view(&mut app).mode, CodeMode::Navigate);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), mixed);
+
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        press(&mut app, "x");
+        key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "xa\nb\nc\n");
+    }
+
+    #[test]
+    fn opening_a_problem_writes_under_the_test_config_dir() {
+        let mut app = app();
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let path = view(&mut app).path.clone();
+        assert!(path.starts_with(crate::state::config_dir()), "{}", path.display());
+        assert!(path.exists());
+    }
+
     #[test]
     fn help_bar_follows_the_mode() {
         let dir = TempDir::new("help");
@@ -790,6 +972,7 @@ mod tests {
         let edit = problem_keys(&app, v);
         assert_eq!(edit[0], ("Esc", "done"));
         assert!(edit.contains(&("^S", "save")));
+        assert!(edit.contains(&("^Q^Q", "discard")));
         assert!(!edit.iter().any(|(k, _)| *k == "q"));
     }
 }

@@ -6,6 +6,7 @@ mod selection;
 use super::highlight::quotes;
 use crate::catalog::Lang;
 use buffer::{display_col, Buffer, EditRecord, TAB_WIDTH};
+pub use buffer::LineEnding;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use history::{EditKind, UndoStack};
 use ratatui::layout::Rect;
@@ -149,11 +150,27 @@ impl CodeEditor {
         self.saved = self.buffer.text().to_string();
     }
 
+    pub fn mixed_endings(&self) -> Option<LineEnding> {
+        self.buffer.mixed_endings()
+    }
+
     /// Replaces the text from disk. Undo history is dropped because it
     /// describes a text that no longer exists.
     pub fn reload(&mut self, text: &str) {
         let head = self.cursor.sel.head;
         self.buffer = Buffer::new(text);
+        self.reset(head);
+    }
+
+    /// Drops every unsaved edit, keeping the file's line endings.
+    pub fn discard(&mut self) {
+        let head = self.cursor.sel.head;
+        let saved = std::mem::take(&mut self.saved);
+        self.buffer.edit(0..self.buffer.len(), &saved);
+        self.reset(head);
+    }
+
+    fn reset(&mut self, head: usize) {
         let pos = self.buffer.pos(head);
         self.cursor.set(Selection::caret(self.buffer.offset(pos)));
         self.history = UndoStack::default();

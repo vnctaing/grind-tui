@@ -15,10 +15,42 @@ pub struct AppState {
     pub language: Lang,
 }
 
+#[cfg(not(test))]
 pub fn config_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join(".grind-tui")
+}
+
+/// Tests never see the real home: each test thread gets its own directory,
+/// removed when the thread ends.
+#[cfg(test)]
+pub fn config_dir() -> PathBuf {
+    test_home::HOME.with(|home| home.0.clone())
+}
+
+#[cfg(test)]
+mod test_home {
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+    pub struct TestHome(pub PathBuf);
+
+    impl Drop for TestHome {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).ok();
+        }
+    }
+
+    thread_local! {
+        pub static HOME: TestHome = TestHome(std::env::temp_dir().join(format!(
+            "grind-tui-home-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
+        )));
+    }
 }
 
 impl AppState {
@@ -78,6 +110,16 @@ mod tests {
         let expected: HashSet<ProblemId> = [1, 349, 20].into_iter().map(ProblemId).collect();
         assert_eq!(reloaded.solved, expected);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn tests_get_a_private_config_dir_outside_the_real_home() {
+        let real = dirs::home_dir().unwrap().join(".grind-tui");
+        let dir = config_dir();
+        assert!(!dir.starts_with(&real), "{} is the real config dir", dir.display());
+        assert!(dir.starts_with(std::env::temp_dir()));
+        let other = std::thread::spawn(config_dir).join().unwrap();
+        assert_ne!(dir, other);
     }
 
     #[test]
