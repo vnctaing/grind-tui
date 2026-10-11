@@ -1,4 +1,5 @@
 mod api;
+mod catalog;
 mod state;
 mod tui;
 
