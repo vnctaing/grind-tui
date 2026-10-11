@@ -27,6 +27,7 @@ fn default_editors() -> Vec<EditorDef> {
         EditorDef { name: "vim".into(),    key: "v".into(), command: "vim".into(),    detach: false },
         EditorDef { name: "Cursor".into(), key: "C".into(), command: "cursor".into(), detach: true  },
         EditorDef { name: "VSCode".into(), key: "V".into(), command: "code".into(),   detach: true  },
+        EditorDef { name: "Zed".into(),    key: "Z".into(), command: "zed".into(),    detach: true  },
     ]
 }
 
@@ -53,7 +54,7 @@ pub fn load_editors() -> Vec<EditorDef> {
 
 const ALLOWED_EDITORS: &[&str] = &[
     "vim", "nvim", "nano", "hx", "helix",
-    "code", "cursor", "emacs", "micro", "vi",
+    "code", "cursor", "zed", "emacs", "micro", "vi",
 ];
 
 pub fn is_trusted(ed: &EditorDef) -> bool {
