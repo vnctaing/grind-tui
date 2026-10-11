@@ -121,6 +121,14 @@ pub fn editor_selection() -> Style {
     Style::default().bg(t::BORDER)
 }
 
+pub fn editor_error() -> Style {
+    Style::default().fg(t::MAGENTA).underline_color(t::MAGENTA).add_modifier(Modifier::UNDERLINED)
+}
+
+pub fn editor_warning() -> Style {
+    Style::default().fg(t::YELLOW).underline_color(t::YELLOW).add_modifier(Modifier::UNDERLINED)
+}
+
 pub fn progress_bar(done: usize, total: usize, width: u16) -> Vec<Span<'static>> {
     let width = usize::from(width);
     let filled = if total == 0 {

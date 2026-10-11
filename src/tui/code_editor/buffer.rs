@@ -36,11 +36,13 @@ impl LineEnding {
 /// Every offset is a byte offset into `text` that lies on a char boundary.
 /// `text` always uses `\n`; `ending` is the file's dominant line ending, which
 /// `contents` writes back. `mixed` records that the file used both.
+/// `version` changes on every edit.
 pub struct Buffer {
     text: String,
     line_starts: Vec<usize>,
     ending: LineEnding,
     mixed: bool,
+    version: u64,
 }
 
 impl Buffer {
@@ -50,7 +52,7 @@ impl Buffer {
         let ending = if crlf > lf { LineEnding::Crlf } else { LineEnding::Lf };
         let text = text.replace("\r\n", "\n");
         let line_starts = line_starts(&text);
-        Buffer { text, line_starts, ending, mixed: crlf > 0 && lf > 0 }
+        Buffer { text, line_starts, ending, mixed: crlf > 0 && lf > 0, version: 0 }
     }
 
     pub fn text(&self) -> &str {
@@ -67,6 +69,10 @@ impl Buffer {
     /// The ending a file with both kinds is normalized to on save.
     pub fn mixed_endings(&self) -> Option<LineEnding> {
         self.mixed.then_some(self.ending)
+    }
+
+    pub fn version(&self) -> u64 {
+        self.version
     }
 
     pub fn len(&self) -> usize {
@@ -111,6 +117,7 @@ impl Buffer {
         let removed = self.text[range.clone()].to_string();
         self.text.replace_range(range.clone(), new);
         self.line_starts = line_starts(&self.text);
+        self.version += 1;
         EditRecord { at: range.start, removed, inserted: new.to_string() }
     }
 

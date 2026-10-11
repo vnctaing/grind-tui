@@ -1,4 +1,5 @@
 use super::app::{problem_keys, App, CodeMode, Panel, ProblemView};
+use super::code_editor::{Diagnostic, Severity};
 use super::markdown::render_markdown;
 use super::theme::{self, help_line, panel, t};
 use crate::catalog::{Body, Problem};
@@ -194,7 +195,7 @@ fn draw_code(f: &mut Frame, area: Rect, view: &ProblemView) {
 }
 
 fn draw_status(f: &mut Frame, area: Rect, app: &App, view: &ProblemView, problem: &Problem) {
-    let mut lines = vec![Line::from(status_pill(app.is_solved(view.idx)))];
+    let mut lines = vec![Line::from(status_pill(app.is_solved(view.idx))), syntax_summary(view.editor.diagnostics())];
     lines.extend(
         view.message
             .lines()
@@ -211,6 +212,23 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App, view: &ProblemView, problem
             .scroll((view.scroll.output, 0)),
         area,
     );
+}
+
+fn syntax_summary(diagnostics: &[Diagnostic]) -> Line<'static> {
+    let count = |severity| diagnostics.iter().filter(|d| d.severity == severity).count();
+    let (errors, warnings) = (count(Severity::Error), count(Severity::Warning));
+    let label = Span::styled("Syntax  ", Style::default().fg(t::MUTED));
+    if errors + warnings == 0 {
+        return Line::from(vec![label, Span::styled("✓ no errors", Style::default().fg(t::MINT))]);
+    }
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    Line::from(vec![
+        label,
+        Span::styled(format!("● {errors} error{}", plural(errors)), Style::default().fg(t::MAGENTA)),
+        Span::styled(" · ", Style::default().fg(t::MUTED)),
+        Span::styled(format!("▲ {warnings} warning{}", plural(warnings)), Style::default().fg(t::YELLOW)),
+        Span::styled("  F8 next", Style::default().fg(t::MUTED)),
+    ])
 }
 
 fn status_pill(solved: bool) -> Span<'static> {
@@ -375,6 +393,16 @@ mod tests {
         let edit = render(&mut app, 140, 40);
         assert!(text(&edit).contains("Ln 1, Col 1 · Esc done"));
         assert_eq!(cyan(&edit), cyan(&nav) + 1);
+    }
+
+    #[test]
+    fn status_panel_counts_syntax_errors() {
+        let mut app = app_on("two-sum");
+        assert!(text(&render(&mut app, 140, 40)).contains("Syntax  ✓ no errors"));
+        let lang = app.progress.language;
+        view_mut(&mut app).editor = crate::tui::code_editor::CodeEditor::new("def f(x)\n    return [x\n", lang);
+        let screen = text(&render(&mut app, 140, 40));
+        assert!(screen.contains("Syntax  ● 2 errors · ▲ 0 warnings  F8 next"), "{screen}");
     }
 
     #[test]

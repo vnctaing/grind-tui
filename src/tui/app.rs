@@ -395,6 +395,7 @@ pub fn problem_keys(app: &App, view: &ProblemView) -> Vec<(&'static str, &'stati
         return vec![
             ("Esc", "done"),
             ("^S", "save"),
+            ("F8", "next error"),
             ("^Z", "undo"),
             ("^Y", "redo"),
             ("^C/^X/^V", "copy/cut/paste"),
@@ -403,7 +404,7 @@ pub fn problem_keys(app: &App, view: &ProblemView) -> Vec<(&'static str, &'stati
             ("^Q^Q", "discard"),
         ];
     }
-    vec![
+    let mut keys = vec![
         ("b", "back"),
         ("q", "quit"),
         ("Enter", "edit"),
@@ -415,7 +416,11 @@ pub fn problem_keys(app: &App, view: &ProblemView) -> Vec<(&'static str, &'stati
         ("Tab", "focus"),
         ("y", "sync"),
         ("Y", "yank"),
-    ]
+    ];
+    if !view.editor.diagnostics().is_empty() {
+        keys.insert(3, ("F8", "next error"));
+    }
+    keys
 }
 
 // ── Key handling ──────────────────────────────────────────────────────────────
@@ -531,6 +536,10 @@ fn handle_problem_key(app: &mut App, key: KeyCode) -> Action {
     let Page::Problem(view) = &mut app.page else { return Action::None };
     match key {
         KeyCode::Enter => view.start_editing(),
+        KeyCode::F(8) => {
+            view.collapsed.code = false;
+            view.editor.next_diagnostic();
+        }
         KeyCode::Tab => {
             view.focused = match view.focused {
                 Panel::Code => Panel::Description,
@@ -1007,5 +1016,22 @@ mod tests {
         assert!(edit.contains(&("^S", "save")));
         assert!(edit.contains(&("^Q^Q", "discard")));
         assert!(!edit.iter().any(|(k, _)| *k == "q"));
+        assert!(edit.contains(&("F8", "next error")));
+        assert!(!nav.iter().any(|(k, _)| *k == "F8"), "a clean buffer hides F8");
+    }
+
+    #[test]
+    fn f8_in_navigate_mode_moves_to_the_error_and_shows_its_key() {
+        let dir = TempDir::new("f8");
+        let src = "def f(x):\n    return (x\n";
+        let (mut app, _) = app_with_file(&dir, src);
+        view(&mut app).collapsed.code = true;
+        let Page::Problem(v) = &app.page else { unreachable!() };
+        assert!(problem_keys(&app, v).contains(&("F8", "next error")));
+        key(&mut app, KeyCode::F(8), KeyModifiers::NONE);
+        let v = view(&mut app);
+        assert!(!v.collapsed.code);
+        assert_eq!(v.mode, CodeMode::Navigate);
+        assert_eq!(v.editor.caret(), (2, 12));
     }
 }

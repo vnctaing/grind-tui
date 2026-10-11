@@ -1,4 +1,5 @@
 mod buffer;
+mod diagnostics;
 mod history;
 mod render;
 mod selection;
@@ -7,6 +8,8 @@ use super::highlight::quotes;
 use crate::catalog::Lang;
 use buffer::{display_col, Buffer, EditRecord, TAB_WIDTH};
 pub use buffer::LineEnding;
+use diagnostics::Checker;
+pub use diagnostics::{Diagnostic, Severity};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use history::{EditKind, UndoStack};
 use ratatui::layout::Rect;
@@ -41,6 +44,7 @@ enum Command {
     Undo,
     Redo,
     Save,
+    NextDiagnostic,
 }
 
 fn command(key: KeyEvent) -> Option<Command> {
@@ -61,6 +65,8 @@ fn command(key: KeyEvent) -> Option<Command> {
             's' | 'S' => Some(Command::Save),
             _ => None,
         },
+        KeyCode::Char('e') if alt => Some(Command::NextDiagnostic),
+        KeyCode::F(8) => Some(Command::NextDiagnostic),
         KeyCode::Char('b') if alt => mv(Motion::WordLeft),
         KeyCode::Char('f') if alt => mv(Motion::WordRight),
         KeyCode::Char(c) => Some(Command::Insert(c)),
@@ -115,12 +121,16 @@ pub struct CodeEditor {
     scroll: Scroll,
     /// Text area size from the last frame, for paging and keeping the caret in view.
     viewport: Cell<Viewport>,
+    checker: Checker,
+    /// Findings for the buffer at `checked`, sorted by start.
+    diagnostics: Vec<Diagnostic>,
+    checked: u64,
 }
 
 impl CodeEditor {
     pub fn new(text: &str, lang: Lang) -> CodeEditor {
         let buffer = Buffer::new(text);
-        CodeEditor {
+        let mut ed = CodeEditor {
             saved: buffer.text().to_string(),
             buffer,
             cursor: Cursor::default(),
@@ -129,6 +139,55 @@ impl CodeEditor {
             lang,
             scroll: Scroll::default(),
             viewport: Cell::default(),
+            checker: Checker::new(lang),
+            diagnostics: Vec::new(),
+            checked: 0,
+        };
+        ed.recheck();
+        ed
+    }
+
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        &self.diagnostics
+    }
+
+    /// The diagnostic to describe for the caret: one on its line, else the
+    /// next one after it, wrapping.
+    pub fn diagnostic_at_caret(&self) -> Option<&Diagnostic> {
+        let head = self.cursor.sel.head;
+        let line = self.buffer.pos(head).line;
+        let on_line = |d: &&Diagnostic| self.buffer.pos(d.range.start).line == line;
+        self.diagnostics
+            .iter()
+            .filter(on_line)
+            .find(|d| d.range.contains(&head) || d.range.start == head)
+            .or_else(|| self.diagnostics.iter().find(on_line))
+            .or_else(|| self.next_diagnostic_after(head))
+    }
+
+    fn next_diagnostic_after(&self, offset: usize) -> Option<&Diagnostic> {
+        self.diagnostics
+            .iter()
+            .find(|d| d.range.start > offset)
+            .or_else(|| self.diagnostics.first())
+    }
+
+    /// Moves the caret to the next diagnostic, wrapping to the first.
+    pub fn next_diagnostic(&mut self) {
+        if let Some(at) = self.next_diagnostic_after(self.cursor.sel.head).map(|d| d.range.start) {
+            self.cursor.set(Selection::caret(at));
+            self.reveal();
+        }
+    }
+
+    fn recheck(&mut self) {
+        self.diagnostics = self.checker.check(self.buffer.text());
+        self.checked = self.buffer.version();
+    }
+
+    fn refresh_diagnostics(&mut self) {
+        if self.checked != self.buffer.version() {
+            self.recheck();
         }
     }
 
@@ -160,6 +219,7 @@ impl CodeEditor {
         let head = self.cursor.sel.head;
         self.buffer = Buffer::new(text);
         self.reset(head);
+        self.recheck();
     }
 
     /// Drops every unsaved edit, keeping the file's line endings.
@@ -168,6 +228,7 @@ impl CodeEditor {
         let saved = std::mem::take(&mut self.saved);
         self.buffer.edit(0..self.buffer.len(), &saved);
         self.reset(head);
+        self.refresh_diagnostics();
     }
 
     fn reset(&mut self, head: usize) {
@@ -187,6 +248,7 @@ impl CodeEditor {
     pub fn handle_key(&mut self, key: KeyEvent, now: Instant) -> Effect {
         let Some(cmd) = command(key) else { return Effect::None };
         let effect = self.run(cmd, now);
+        self.refresh_diagnostics();
         self.reveal();
         effect
     }
@@ -195,6 +257,7 @@ impl CodeEditor {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         let range = self.cursor.sel.range();
         self.edit(range.clone(), &text, range.start + text.len(), EditKind::Other, now);
+        self.refresh_diagnostics();
         self.reveal();
     }
 
@@ -234,6 +297,7 @@ impl CodeEditor {
                 }
             }
             Command::Save => return Effect::Save,
+            Command::NextDiagnostic => self.next_diagnostic(),
         }
         Effect::None
     }

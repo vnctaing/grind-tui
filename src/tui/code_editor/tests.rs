@@ -352,11 +352,11 @@ fn renders_selection_and_cursor_cells() {
 
 #[test]
 fn cursor_at_line_end_and_tabs_render_as_cells() {
-    let mut e = Ed::new("\tx", Lang::Go);
+    let mut e = Ed::new("\t// x", Lang::Go);
     e.press(KeyCode::End);
     let screen = e.render(20, 2, true);
-    assert_eq!(row(&screen, 0), "1 │     x           ");
-    assert_eq!(cells_with_bg(&screen, t::CYAN), vec![(9, 0, " ".into())]);
+    assert_eq!(row(&screen, 0), "1 │     // x        ");
+    assert_eq!(cells_with_bg(&screen, t::CYAN), vec![(12, 0, " ".into())]);
 }
 
 #[test]
@@ -371,15 +371,15 @@ fn syntax_colors_come_from_the_highlighter() {
 fn vertical_scroll_follows_the_cursor() {
     let text: String = (1..=50).map(|i| format!("line{i}\n")).collect();
     let mut e = py(&text);
-    e.render(20, 5, true);
+    e.render(20, 6, true);
     for _ in 0..20 {
         e.press(KeyCode::Down);
     }
-    let screen = e.render(20, 5, true);
+    let screen = e.render(20, 6, true);
     assert_eq!(row(&screen, 4).trim_end(), "21 │ line21");
     assert_eq!(cells_with_bg(&screen, t::CYAN), vec![(5, 4, "l".into())]);
     e.press(KeyCode::PageUp);
-    let screen = e.render(20, 5, true);
+    let screen = e.render(20, 6, true);
     assert_eq!(row(&screen, 0).trim_end(), "17 │ line17");
 }
 
@@ -487,4 +487,107 @@ fn discard_restores_the_saved_text_with_its_line_endings() {
     assert_eq!(e.ed.contents(), "a\r\nb");
     e.ctrl('z');
     assert_eq!(e.text(), "a\nb");
+}
+
+const MISSING_COLON: &str = "def f(x):\n    if x > 1\n        return x\n";
+
+#[test]
+fn an_error_gets_a_gutter_marker_an_underline_and_a_status_line() {
+    let e = py(MISSING_COLON);
+    let screen = e.render(40, 6, false);
+    assert_eq!(row(&screen, 1).trim_end(), "2●│     if x > 1");
+    assert_eq!(screen[(1, 1)].fg, t::MAGENTA);
+    assert_eq!(row(&screen, 0).chars().nth(1), Some(' '));
+    let underlined: Vec<(u16, u16)> = (0..40)
+        .flat_map(|x| (0..5).map(move |y| (x, y)))
+        .filter(|&(x, y)| screen[(x, y)].modifier.contains(ratatui::style::Modifier::UNDERLINED))
+        .collect();
+    assert_eq!(underlined, vec![(16, 1)], "the cell after `if x > 1`");
+    assert_eq!(screen[(16, 1)].fg, t::MAGENTA);
+    assert_eq!(row(&screen, 5).trim_end(), "● 1 error · Ln 2: Missing ':'");
+}
+
+#[test]
+fn a_warning_is_yellow_and_a_clean_buffer_says_so() {
+    let e = Ed::new("int f(int x) {\n  if (x);\n  return x;\n}\n", Lang::C);
+    let screen = e.render(60, 6, false);
+    assert_eq!(screen[(1, 1)].symbol(), "▲");
+    assert_eq!(screen[(1, 1)].fg, t::YELLOW);
+    assert_eq!(screen[(12, 1)].symbol(), ";");
+    assert_eq!(screen[(12, 1)].fg, t::YELLOW);
+    assert_eq!(row(&screen, 5).trim_end(), "▲ 1 warning · Ln 2: Empty statement after 'if'");
+
+    let clean = py("x = 1\n").render(40, 4, false);
+    assert_eq!(row(&clean, 3).trim_end(), "✓ no syntax errors");
+}
+
+#[test]
+fn fixing_the_mistake_clears_the_diagnostic_and_undo_brings_it_back() {
+    let mut e = py(MISSING_COLON);
+    assert_eq!(e.ed.diagnostics().len(), 1);
+    e.press(KeyCode::Down);
+    e.press(KeyCode::End);
+    e.type_str(":");
+    assert_eq!(e.ed.diagnostics(), &[]);
+    e.ctrl('z');
+    assert_eq!(e.ed.diagnostics().len(), 1);
+}
+
+#[test]
+fn f8_and_alt_e_jump_to_the_next_diagnostic_and_wrap() {
+    let src = "def f(x):\n    if x > 1\n        return (x\n";
+    let mut e = py(src);
+    let starts: Vec<usize> = e.ed.diagnostics().iter().map(|d| d.range.start).collect();
+    assert_eq!(starts, vec![src.find(" 1\n").unwrap() + 2, src.rfind("(x").unwrap()]);
+    e.press(KeyCode::F(8));
+    assert_eq!(e.head(), starts[0]);
+    e.key(KeyCode::Char('e'), KeyModifiers::ALT);
+    assert_eq!(e.head(), starts[1]);
+    assert_eq!(e.text(), src);
+    e.press(KeyCode::F(8));
+    assert_eq!(e.head(), starts[0]);
+    let screen = e.render(40, 6, true);
+    assert_eq!(row(&screen, 5).trim_end(), "● 2 errors · Ln 2: Missing ':'");
+}
+
+#[test]
+fn f8_scrolls_a_far_diagnostic_into_view() {
+    let text = format!("{}x = (1\n", "y = 2\n".repeat(40));
+    let mut e = py(&text);
+    e.render(30, 6, true);
+    e.press(KeyCode::F(8));
+    let screen = e.render(30, 6, true);
+    assert!((0..5).any(|y| row(&screen, y).starts_with("41●│ x = (1")), "{screen:?}");
+}
+
+#[test]
+fn random_typing_with_multibyte_text_never_panics_in_any_language() {
+    let pieces = ["(", ")", "{", "}", "[", "\"", "'", "`", "${", "/*", "#", "é", "漢", "🦀", "\t", "x", " ", ";", ":", "="];
+    let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+    let mut next = |n: usize| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed % n as u64) as usize
+    };
+    for lang in Lang::ALL {
+        let mut e = Ed::new("", lang);
+        for _ in 0..300 {
+            match next(6) {
+                0 => e.press(KeyCode::Enter),
+                1 => e.press(KeyCode::Backspace),
+                2 => e.press([KeyCode::Left, KeyCode::Up, KeyCode::Down, KeyCode::Right][next(4)]),
+                3 => e.press(KeyCode::F(8)),
+                _ => {
+                    e.ed.paste(pieces[next(pieces.len())], e.now);
+                    Effect::None
+                }
+            };
+            let text = e.text().to_string();
+            for d in e.ed.diagnostics() {
+                assert!(d.range.end <= text.len() && text.is_char_boundary(d.range.start) && text.is_char_boundary(d.range.end));
+            }
+            e.render(24, 6, true);
+        }
+    }
 }
