@@ -87,6 +87,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
         match event::read()? {
             Event::Mouse(mouse) => {
                 if let Page::Problem(view) = &mut app.page {
+                    view.disarm();
                     match mouse.kind {
                         MouseEventKind::ScrollDown => view.scroll_by(3),
                         MouseEventKind::ScrollUp => view.scroll_by(-3),
@@ -103,6 +104,11 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
                     Action::LaunchEditor(ed) => launch_editor(terminal, app, &ed)?,
                     Action::CopyCommand => copy_command(app),
                     Action::Clipboard(text) => { system_copy(&text).ok(); }
+                }
+            }
+            Event::Resize(..) => {
+                if let Page::Problem(view) = &mut app.page {
+                    view.disarm();
                 }
             }
             _ => {}

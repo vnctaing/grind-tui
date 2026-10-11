@@ -126,10 +126,15 @@ impl ProblemView {
                 true
             }
             Err(e) => {
+                self.mtime = modified(&self.path);
                 self.message = format!("Reload failed: {e}");
                 false
             }
         }
+    }
+
+    pub fn disarm(&mut self) {
+        self.armed = None;
     }
 
     fn arm(&mut self, confirm: Confirm) {
@@ -900,6 +905,34 @@ mod tests {
         key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
         assert_eq!(view(&mut app).editor.text(), "!zmine");
         assert!(view(&mut app).message.contains("Ctrl-R again"));
+    }
+
+    #[test]
+    fn disarm_cancels_an_armed_reload() {
+        let dir = TempDir::new("disarm");
+        let (mut app, path) = app_with_file(&dir, "mine");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        press(&mut app, "!");
+        std::fs::write(&path, "theirs").unwrap();
+
+        key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        view(&mut app).disarm();
+        key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert_eq!(view(&mut app).editor.text(), "!mine");
+    }
+
+    #[test]
+    fn a_failed_auto_reload_does_not_repeat_every_poll() {
+        let dir = TempDir::new("badreload");
+        let (mut app, path) = app_with_file(&dir, "mine");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&path, [0xff, 0xfe]).unwrap();
+
+        view(&mut app).poll_disk();
+        assert!(view(&mut app).message.contains("Reload failed"));
+        view(&mut app).message = "Marked solved.".into();
+        view(&mut app).poll_disk();
+        assert_eq!(view(&mut app).message, "Marked solved.");
     }
 
     #[test]
