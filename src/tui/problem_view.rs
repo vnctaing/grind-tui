@@ -57,9 +57,14 @@ fn draw_body(f: &mut Frame, area: Rect, app: &App, view: &ProblemView, problem: 
         draw_collapsed(f, rows[0], "Description", "p");
         rows[1]
     } else {
-        let cols = Layout::horizontal([Constraint::Percentage(40), Constraint::Min(0)]).split(area);
+        let cols = Layout::horizontal([
+            Constraint::Percentage(40),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(area);
         draw_description(f, cols[0], view, problem);
-        cols[1]
+        cols[2]
     };
     draw_right(f, right, app, view, problem);
 }
@@ -133,7 +138,10 @@ fn examples_block(examples: &str) -> Vec<Line<'static>> {
 
 fn draw_editor_bar(f: &mut Frame, area: Rect, app: &App, view: &ProblemView) {
     let command = app.editors.first().map_or("vim", |e| e.command.as_str());
-    let path = view.path.display().to_string();
+    let path = match view.path.file_name() {
+        Some(name) => format!("~/.grind-tui/{}", name.to_string_lossy()),
+        None => view.path.display().to_string(),
+    };
     let (first, second) = match &view.detached {
         Some(name) => (
             Line::from(Span::styled(
