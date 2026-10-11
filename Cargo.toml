@@ -2,7 +2,7 @@
 name = "grind-tui"
 version = "0.1.0"
 edition = "2024"
-description = "LeetCode in your terminal — browse, run, and submit problems from a TUI"
+description = "LeetCode in your terminal: Grind 75 and NeetCode 150, offline, from a TUI"
 license = "MIT"
 repository = "https://github.com/vnctaing/grind-tui"
 homepage = "https://github.com/vnctaing/grind-tui"
@@ -17,10 +17,7 @@ path = "src/main.rs"
 [dependencies]
 ratatui = "0.29"
 crossterm = "0.28"
-reqwest = { version = "0.12", default-features = false, features = ["cookies", "json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["full"] }
-clap = { version = "4", features = ["derive", "env"] }
+clap = { version = "4", features = ["derive"] }
 dirs = "5"
-thiserror = "1"

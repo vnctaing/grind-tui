@@ -1,4 +1,7 @@
+use crate::catalog::Lang;
+use crate::state::config_dir;
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 // ── Editor config ─────────────────────────────────────────────────────────────
 
@@ -27,11 +30,8 @@ fn default_editors() -> Vec<EditorDef> {
     ]
 }
 
-fn editors_config_path() -> std::path::PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-        .join(".grind-tui")
-        .join("editors.json")
+fn editors_config_path() -> PathBuf {
+    config_dir().join("editors.json")
 }
 
 pub fn load_editors() -> Vec<EditorDef> {
@@ -51,17 +51,21 @@ pub fn load_editors() -> Vec<EditorDef> {
         .unwrap_or_else(default_editors)
 }
 
-// ── File helpers ──────────────────────────────────────────────────────────────
+const ALLOWED_EDITORS: &[&str] = &[
+    "vim", "nvim", "nano", "hx", "helix",
+    "code", "cursor", "emacs", "micro", "vi",
+];
 
-fn ext_for_lang(lang: &str) -> &'static str {
-    match lang {
-        "python3" | "python" => "py", "rust" => "rs", "javascript" => "js",
-        "typescript" => "ts", "java" => "java", "cpp" => "cpp", "go" => "go", "c" => "c", _ => "txt",
-    }
+pub fn is_trusted(ed: &EditorDef) -> bool {
+    let binary = Path::new(&ed.command)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    ALLOWED_EDITORS.contains(&binary)
 }
 
-pub(super) fn code_file_path(slug: &str, lang: &str) -> String {
-    let dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp")).join(".grind-tui");
-    std::fs::create_dir_all(&dir).ok();
-    dir.join(format!("{}.{}", slug, ext_for_lang(lang))).to_string_lossy().to_string()
+// ── File helpers ──────────────────────────────────────────────────────────────
+
+pub fn code_file_path(slug: &str, lang: Lang) -> PathBuf {
+    config_dir().join(format!("{}.{}", slug, lang.ext()))
 }
