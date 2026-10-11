@@ -113,6 +113,14 @@ pub fn panel(title: &str, hint: &str, focused: bool) -> Block<'static> {
     block
 }
 
+pub fn editor_cursor() -> Style {
+    Style::default().fg(t::BG).bg(t::CYAN)
+}
+
+pub fn editor_selection() -> Style {
+    Style::default().bg(t::BORDER)
+}
+
 pub fn progress_bar(done: usize, total: usize, width: u16) -> Vec<Span<'static>> {
     let width = usize::from(width);
     let filled = if total == 0 {

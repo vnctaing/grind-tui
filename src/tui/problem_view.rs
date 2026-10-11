@@ -1,5 +1,4 @@
-use super::app::{problem_keys, App, Panel, ProblemView};
-use super::highlight::{highlight_code, with_gutter};
+use super::app::{problem_keys, App, CodeMode, Panel, ProblemView};
 use super::markdown::render_markdown;
 use super::theme::{self, help_line, panel, t};
 use crate::catalog::{Body, Problem};
@@ -85,7 +84,7 @@ fn draw_right(f: &mut Frame, area: Rect, app: &App, view: &ProblemView, problem:
     if view.collapsed.code {
         draw_collapsed(f, rows[1], "Code", "c");
     } else {
-        draw_code(f, rows[1], app, view);
+        draw_code(f, rows[1], view);
     }
     if view.collapsed.output {
         draw_collapsed(f, rows[2], "Status", "o");
@@ -177,18 +176,21 @@ fn draw_editor_bar(f: &mut Frame, area: Rect, app: &App, view: &ProblemView) {
     f.render_widget(Paragraph::new(vec![first, second]), area);
 }
 
-fn draw_code(f: &mut Frame, area: Rect, app: &App, view: &ProblemView) {
-    let hint = match &view.detached {
-        Some(name) => format!("live from {name} · c hide"),
-        None => "read-only · c hide".to_string(),
+fn draw_code(f: &mut Frame, area: Rect, view: &ProblemView) {
+    let editing = view.mode == CodeMode::Edit;
+    let dirty = if view.editor.is_dirty() { "● unsaved · " } else { "" };
+    let hint = match (editing, &view.detached) {
+        (true, _) => {
+            let (line, col) = view.editor.caret();
+            format!("{dirty}Ln {line}, Col {col} · Esc done")
+        }
+        (false, Some(name)) => format!("{dirty}live from {name} · Enter edit"),
+        (false, None) => format!("{dirty}Enter edit · c hide"),
     };
-    let lines = with_gutter(highlight_code(&view.code, app.progress.language));
-    f.render_widget(
-        Paragraph::new(lines)
-            .block(panel("Code", &hint, view.focused == Panel::Code))
-            .scroll((view.scroll.code, 0)),
-        area,
-    );
+    let block = panel("Code", &hint, view.focused == Panel::Code || editing);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    view.editor.render(inner, f.buffer_mut(), editing);
 }
 
 fn draw_status(f: &mut Frame, area: Rect, app: &App, view: &ProblemView, problem: &Problem) {
@@ -224,24 +226,15 @@ mod tests {
     use super::*;
     use crate::catalog::Catalog;
     use crate::state::AppState;
-    use crate::tui::app::{Collapsed, ListFilter, Page, Scroll};
+    use crate::tui::app::{Collapsed, ListFilter, Page};
     use ratatui::{backend::TestBackend, buffer::Buffer, style::Color, Terminal};
 
     fn app_on(slug: &str) -> App {
         let mut app = App::new(Catalog::embedded(), AppState::default(), vec![], ListFilter::All, None);
         let idx = app.catalog.problems().iter().position(|p| p.slug == slug).unwrap();
         let code = app.catalog.problems()[idx].starter(app.progress.language).to_string();
-        app.page = Page::Problem(ProblemView {
-            idx,
-            code,
-            path: std::env::temp_dir().join("grind-tui-problem-view-test").join(format!("{slug}.py")),
-            mtime: None,
-            focused: Panel::Code,
-            collapsed: Collapsed::default(),
-            scroll: Scroll::default(),
-            detached: None,
-            message: String::new(),
-        });
+        let path = std::env::temp_dir().join("grind-tui-problem-view-test").join(format!("{slug}.py"));
+        app.page = Page::Problem(ProblemView::new(idx, path, &code, app.progress.language));
         app
     }
 
@@ -370,6 +363,21 @@ mod tests {
     }
 
     #[test]
+    fn code_panel_is_editable_and_shows_the_caret_only_in_edit_mode() {
+        let mut app = app_on("two-sum");
+        let nav = render(&mut app, 140, 40);
+        let screen = text(&nav);
+        assert!(!screen.contains("read-only"));
+        assert!(screen.contains("Enter edit"));
+        let cyan = |buf: &Buffer| buf.content().iter().filter(|c| c.bg == t::CYAN).count();
+
+        view_mut(&mut app).mode = CodeMode::Edit;
+        let edit = render(&mut app, 140, 40);
+        assert!(text(&edit).contains("Ln 1, Col 1 · Esc done"));
+        assert_eq!(cyan(&edit), cyan(&nav) + 1);
+    }
+
+    #[test]
     fn quit_is_visible_at_80_cols() {
         let mut app = app_on("two-sum");
         let bottom = rows(&render(&mut app, 80, 24)).pop().unwrap();
@@ -398,12 +406,13 @@ mod tests {
         sizes.extend([(80, 24), (140, 40)]);
         for slug in ["two-sum", "meeting-rooms"] {
             let mut app = app_on(slug);
-            for mask in 0..8u8 {
+            for mask in 0..16u8 {
                 view_mut(&mut app).collapsed = Collapsed {
                     desc: mask & 1 != 0,
                     code: mask & 2 != 0,
                     output: mask & 4 != 0,
                 };
+                view_mut(&mut app).mode = if mask & 8 != 0 { CodeMode::Edit } else { CodeMode::Navigate };
                 for &(w, h) in &sizes {
                     render(&mut app, w, h);
                 }

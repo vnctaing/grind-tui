@@ -1,4 +1,5 @@
 mod app;
+mod code_editor;
 mod editor;
 mod highlight;
 mod list_view;
@@ -9,9 +10,9 @@ mod theme;
 pub use app::{App, ListFilter};
 pub use editor::load_editors;
 
-use app::{handle_key, Action, Page};
+use app::{handle_key, Action, CodeMode, Page};
 use crossterm::{
-    event::{self, Event, KeyEventKind, MouseEventKind},
+    event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind, MouseEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -21,7 +22,7 @@ use problem_view::draw_problem_page;
 use ratatui::{backend::CrosstermBackend, style::Style, Frame, Terminal};
 use theme::t;
 use std::io;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // ── Drawing ───────────────────────────────────────────────────────────────────
 
@@ -38,14 +39,14 @@ fn draw(f: &mut Frame, app: &mut App) {
 
 fn suspend_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), crossterm::event::DisableMouseCapture)?;
+    execute!(terminal.backend_mut(), crossterm::event::DisableMouseCapture, DisableBracketedPaste)?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()
 }
 
 fn resume_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
     execute!(terminal.backend_mut(), EnterAlternateScreen)?;
-    execute!(terminal.backend_mut(), crossterm::event::EnableMouseCapture)?;
+    execute!(terminal.backend_mut(), crossterm::event::EnableMouseCapture, EnableBracketedPaste)?;
     enable_raw_mode()?;
     terminal.clear()
 }
@@ -56,12 +57,12 @@ pub fn run(app: &mut App) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
-    execute!(stdout, crossterm::event::EnableMouseCapture)?;
+    execute!(stdout, crossterm::event::EnableMouseCapture, EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let result = event_loop(&mut terminal, app);
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), crossterm::event::DisableMouseCapture)?;
+    execute!(terminal.backend_mut(), crossterm::event::DisableMouseCapture, DisableBracketedPaste)?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     result
@@ -78,10 +79,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
 
         if !event::poll(timeout)? {
             if let Page::Problem(view) = &mut app.page {
-                if view.is_stale() && view.reload().is_ok() {
-                    let name = view.detached.as_deref().unwrap_or("editor");
-                    view.message = format!("Auto-synced from {}.", name);
-                }
+                view.poll_disk();
             }
             continue;
         }
@@ -96,13 +94,21 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
                     }
                 }
             }
+            Event::Paste(text) => {
+                if let Page::Problem(view) = &mut app.page
+                    && view.mode == CodeMode::Edit
+                {
+                    view.editor.paste(&text, Instant::now());
+                }
+            }
             Event::Key(key) => {
                 if key.kind != KeyEventKind::Press { continue; }
-                match handle_key(app, key.code) {
+                match handle_key(app, key) {
                     Action::None => {}
                     Action::Quit => return Ok(()),
                     Action::LaunchEditor(ed) => launch_editor(terminal, app, &ed)?,
                     Action::CopyCommand => copy_command(app),
+                    Action::Clipboard(text) => { system_copy(&text).ok(); }
                     Action::SyncDetached => {
                         if let Page::Problem(view) = &mut app.page {
                             view.message = match view.reload() {
@@ -137,18 +143,21 @@ fn launch_editor(
     Ok(())
 }
 
+fn system_copy(text: &str) -> io::Result<()> {
+    let mut child = std::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        use std::io::Write;
+        stdin.write_all(text.as_bytes())?;
+    }
+    child.wait().map(drop)
+}
+
 fn copy_command(app: &mut App) {
     let Page::Problem(view) = &mut app.page else { return };
     let cmd = format!("nvim {}", view.path.display());
-    let copied = std::process::Command::new("pbcopy")
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            child.stdin.as_mut().unwrap().write_all(cmd.as_bytes())?;
-            child.wait()
-        });
-    view.message = match copied {
+    view.message = match system_copy(&cmd) {
         Ok(_) => format!("Copied: {}", cmd),
         Err(_) => format!("Copy failed. Command: {}", cmd),
     };

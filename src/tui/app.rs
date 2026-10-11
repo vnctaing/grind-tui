@@ -1,10 +1,11 @@
+use super::code_editor::{CodeEditor, Effect};
 use super::editor::{code_file_path, is_trusted, EditorDef};
 use crate::catalog::{Catalog, Difficulty, Lang, ListId, Problem};
 use crate::state::AppState;
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::ListState;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 // ── Shared types ──────────────────────────────────────────────────────────────
 
@@ -36,15 +37,25 @@ impl ListFilter {
 pub struct Collapsed { pub desc: bool, pub code: bool, pub output: bool }
 
 #[derive(Debug, Default, Clone, Copy)]
-pub struct Scroll { pub desc: u16, pub code: u16, pub output: u16 }
+pub struct Scroll { pub desc: u16, pub output: u16 }
+
+/// In `Edit`, keys go to the code editor, so page commands like `q` type text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodeMode { Navigate, Edit }
+
+const CONFLICT: &str = "File changed on disk while you have unsaved edits.\nCtrl-S overwrites it, Ctrl-R reloads it (discards your edits).";
 
 pub struct ProblemView {
     pub idx: usize,
-    pub code: String,
+    pub editor: CodeEditor,
+    pub mode: CodeMode,
     /// The code file is watched while the page is open, so edits made from
     /// another terminal tab sync too, not only those from a detached editor.
     pub path: PathBuf,
     pub mtime: Option<SystemTime>,
+    /// Disk mtime of an external change the user was told about while holding
+    /// unsaved edits. A save overwrites only a change the user has seen.
+    pub conflict: Option<SystemTime>,
     pub focused: Panel,
     pub collapsed: Collapsed,
     pub scroll: Scroll,
@@ -56,11 +67,17 @@ pub struct ProblemView {
 impl ProblemView {
     fn open(idx: usize, problem: &Problem, lang: Lang) -> ProblemView {
         let (path, code) = load_code(problem, lang);
+        ProblemView::new(idx, path, &code, lang)
+    }
+
+    pub fn new(idx: usize, path: PathBuf, code: &str, lang: Lang) -> ProblemView {
         ProblemView {
             idx,
-            code,
+            editor: CodeEditor::new(code, lang),
+            mode: CodeMode::Navigate,
             mtime: modified(&path),
             path,
+            conflict: None,
             focused: Panel::Code,
             collapsed: Collapsed::default(),
             scroll: Scroll::default(),
@@ -70,10 +87,63 @@ impl ProblemView {
     }
 
     pub fn reload(&mut self) -> std::io::Result<()> {
-        self.code = std::fs::read_to_string(&self.path)?;
+        let text = std::fs::read_to_string(&self.path)?;
+        self.editor.reload(&text);
         self.mtime = modified(&self.path);
-        self.scroll.code = 0;
+        self.conflict = None;
         Ok(())
+    }
+
+    /// Pulls in an external change, unless that would discard unsaved edits.
+    pub fn poll_disk(&mut self) {
+        if !self.is_stale() {
+            return;
+        }
+        if self.editor.is_dirty() {
+            let disk = modified(&self.path);
+            if self.conflict != disk {
+                self.conflict = disk;
+                self.message = CONFLICT.to_string();
+            }
+        } else if self.reload().is_ok() {
+            let name = self.detached.as_deref().unwrap_or("disk");
+            self.message = format!("Auto-synced from {name}.");
+        }
+    }
+
+    pub fn save(&mut self) -> bool {
+        let disk = modified(&self.path);
+        if self.is_stale() && self.conflict != disk {
+            self.conflict = disk;
+            self.message = CONFLICT.to_string();
+            return false;
+        }
+        match std::fs::write(&self.path, self.editor.text()) {
+            Ok(()) => {
+                self.mtime = modified(&self.path);
+                self.conflict = None;
+                self.editor.mark_saved();
+                self.message = format!("Saved {}.", self.path.display());
+                true
+            }
+            Err(e) => {
+                self.message = format!("Save failed: {e}");
+                false
+            }
+        }
+    }
+
+    pub fn start_editing(&mut self) {
+        self.collapsed.code = false;
+        self.focused = Panel::Code;
+        self.mode = CodeMode::Edit;
+    }
+
+    pub fn stop_editing(&mut self) {
+        self.mode = CodeMode::Navigate;
+        if self.editor.is_dirty() {
+            self.save();
+        }
     }
 
     /// True when the watched file changed on disk since the last read.
@@ -88,7 +158,7 @@ impl ProblemView {
     pub fn scroll_by(&mut self, delta: i16) {
         let s = match self.focused {
             Panel::Description => &mut self.scroll.desc,
-            Panel::Code => &mut self.scroll.code,
+            Panel::Code => return self.editor.scroll_by(isize::from(delta)),
             Panel::Output => &mut self.scroll.output,
         };
         *s = s.saturating_add_signed(delta);
@@ -118,7 +188,7 @@ fn load_code(problem: &Problem, lang: Lang) -> (PathBuf, String) {
 
 pub enum Page { List, Problem(ProblemView) }
 
-pub enum Action { Quit, LaunchEditor(EditorDef), SyncDetached, CopyCommand, None }
+pub enum Action { Quit, LaunchEditor(EditorDef), SyncDetached, CopyCommand, Clipboard(String), None }
 
 pub struct App {
     pub catalog: Catalog,
@@ -213,10 +283,11 @@ impl App {
         self.progress.language = lang;
         if let Page::Problem(view) = &mut self.page {
             let (path, code) = load_code(&self.catalog.problems()[view.idx], lang);
+            view.editor = CodeEditor::new(&code, lang);
+            view.mode = CodeMode::Navigate;
             view.mtime = modified(&path);
             view.path = path;
-            view.code = code;
-            view.scroll.code = 0;
+            view.conflict = None;
         }
     }
 
@@ -246,15 +317,27 @@ pub fn list_keys(app: &App) -> Vec<(&'static str, &'static str)> {
 }
 
 pub fn problem_keys(app: &App, view: &ProblemView) -> Vec<(&'static str, &'static str)> {
+    if view.mode == CodeMode::Edit {
+        return vec![
+            ("Esc", "done"),
+            ("^S", "save"),
+            ("^Z", "undo"),
+            ("^Y", "redo"),
+            ("^C/^X/^V", "copy/cut/paste"),
+            ("^A", "all"),
+            ("^R", "reload"),
+        ];
+    }
     vec![
         ("b", "back"),
         ("q", "quit"),
+        ("Enter", "edit"),
         ("x", if app.is_solved(view.idx) { "unsolve" } else { "solved" }),
         ("l", app.progress.language.label()),
         ("p", "desc"),
         ("o", "output"),
         ("c", if view.collapsed.code { "show code" } else { "hide code" }),
-        ("Tab", "p/o"),
+        ("Tab", "focus"),
         ("y", "sync"),
         ("Y", "yank"),
     ]
@@ -262,11 +345,31 @@ pub fn problem_keys(app: &App, view: &ProblemView) -> Vec<(&'static str, &'stati
 
 // ── Key handling ──────────────────────────────────────────────────────────────
 
-pub fn handle_key(app: &mut App, key: KeyCode) -> Action {
-    match app.page {
-        Page::List => handle_list_key(app, key),
-        Page::Problem(_) => handle_problem_key(app, key),
+pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
+    match &mut app.page {
+        Page::List => handle_list_key(app, key.code),
+        Page::Problem(view) if view.mode == CodeMode::Edit => handle_edit_key(view, key),
+        Page::Problem(_) => handle_problem_key(app, key.code),
     }
+}
+
+fn handle_edit_key(view: &mut ProblemView, key: KeyEvent) -> Action {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Esc => view.stop_editing(),
+        KeyCode::Char('r' | 'R') if ctrl => {
+            view.message = match view.reload() {
+                Ok(()) => "Reloaded from disk.".to_string(),
+                Err(e) => format!("Reload failed: {e}"),
+            };
+        }
+        _ => match view.editor.handle_key(key, Instant::now()) {
+            Effect::None => {}
+            Effect::Save => { view.save(); }
+            Effect::Copy(text) => return Action::Clipboard(text),
+        },
+    }
+    Action::None
 }
 
 fn handle_list_key(app: &mut App, key: KeyCode) -> Action {
@@ -301,6 +404,15 @@ fn handle_list_key(app: &mut App, key: KeyCode) -> Action {
 }
 
 fn handle_problem_key(app: &mut App, key: KeyCode) -> Action {
+    let launches = |c: char| app.editors.iter().any(|e| e.key == c.to_string());
+    let would_drop_edits = matches!(key, KeyCode::Char(c) if matches!(c, 'q' | 'b' | 'l') || launches(c));
+    if let Page::Problem(view) = &mut app.page
+        && would_drop_edits
+        && view.editor.is_dirty()
+    {
+        view.message = "Unsaved edits. Enter then Ctrl-S saves them, y reloads from disk and discards them.".to_string();
+        return Action::None;
+    }
     if let KeyCode::Char(c) = key {
         if let Some(ed) = app.editors.iter().find(|e| e.key == c.to_string()).cloned() {
             if is_trusted(&ed) {
@@ -323,10 +435,12 @@ fn handle_problem_key(app: &mut App, key: KeyCode) -> Action {
     }
     let Page::Problem(view) = &mut app.page else { return Action::None };
     match key {
+        KeyCode::Enter => view.start_editing(),
         KeyCode::Tab => {
             view.focused = match view.focused {
-                Panel::Output | Panel::Code => Panel::Description,
+                Panel::Code => Panel::Description,
                 Panel::Description => Panel::Output,
+                Panel::Output => Panel::Code,
             };
         }
         KeyCode::Char('c') => view.collapsed.code = !view.collapsed.code,
@@ -358,7 +472,7 @@ mod tests {
 
     fn press(app: &mut App, keys: &str) {
         for c in keys.chars() {
-            handle_key(app, KeyCode::Char(c));
+            handle_key(app, KeyEvent::from(KeyCode::Char(c)));
         }
     }
 
@@ -369,9 +483,9 @@ mod tests {
         let matches = app.filtered.len();
         assert!(matches > 0 && matches < 167);
         for _ in 0..4 {
-            handle_key(&mut app, KeyCode::Backspace);
+            handle_key(&mut app, KeyEvent::from(KeyCode::Backspace));
         }
-        handle_key(&mut app, KeyCode::Enter);
+        handle_key(&mut app, KeyEvent::from(KeyCode::Enter));
         assert_eq!(app.filtered.len(), 167);
         assert_eq!(app.list_state.offset(), 0);
         assert_eq!(app.list_state.selected(), Some(0));
@@ -383,7 +497,7 @@ mod tests {
         app.list_state.select(Some(100));
         *app.list_state.offset_mut() = 90;
         press(&mut app, "/tr");
-        handle_key(&mut app, KeyCode::Enter);
+        handle_key(&mut app, KeyEvent::from(KeyCode::Enter));
         assert_eq!(app.filtered.len(), 41);
         assert_eq!(app.list_state.selected(), Some(0));
         assert_eq!(app.list_state.offset(), 0);
@@ -438,5 +552,144 @@ mod tests {
         let app = App::new(Catalog::embedded(), AppState::default(), vec![], ListFilter::All, Some(Difficulty::Hard));
         assert!(!app.filtered.is_empty());
         assert!(app.filtered.iter().all(|&i| app.catalog.problems()[i].difficulty == Difficulty::Hard));
+    }
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> TempDir {
+            let dir = std::env::temp_dir().join(format!("grind-tui-{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            TempDir(dir)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).ok();
+        }
+    }
+
+    fn app_with_file(dir: &TempDir, contents: &str) -> (App, PathBuf) {
+        let mut app = app();
+        let path = dir.0.join("two-sum.py");
+        std::fs::write(&path, contents).unwrap();
+        app.page = Page::Problem(ProblemView::new(0, path.clone(), contents, Lang::Python3));
+        (app, path)
+    }
+
+    fn view(app: &mut App) -> &mut ProblemView {
+        match &mut app.page {
+            Page::Problem(view) => view,
+            Page::List => panic!("not on a problem page"),
+        }
+    }
+
+    fn key(app: &mut App, code: KeyCode, mods: KeyModifiers) -> Action {
+        handle_key(app, KeyEvent::new(code, mods))
+    }
+
+    fn touch_later(path: &Path, contents: &str) {
+        std::fs::write(path, contents).unwrap();
+        let later = SystemTime::now() + std::time::Duration::from_secs(60);
+        std::fs::File::options().write(true).open(path).unwrap().set_modified(later).unwrap();
+    }
+
+    #[test]
+    fn enter_switches_to_edit_mode_where_page_letters_type_text() {
+        let dir = TempDir::new("mode");
+        let (mut app, path) = app_with_file(&dir, "");
+        press(&mut app, "x");
+        assert!(!app.progress.solved.is_empty());
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(view(&mut app).mode, CodeMode::Edit);
+        let solved = app.progress.solved.clone();
+        for c in "qbxlc".chars() {
+            assert!(matches!(key(&mut app, KeyCode::Char(c), KeyModifiers::NONE), Action::None));
+        }
+        assert_eq!(app.progress.solved, solved);
+        assert_eq!(view(&mut app).editor.text(), "qbxlc");
+        assert!(!view(&mut app).collapsed.code);
+
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(view(&mut app).mode, CodeMode::Navigate);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "qbxlc");
+        assert!(matches!(key(&mut app, KeyCode::Char('q'), KeyModifiers::NONE), Action::Quit));
+    }
+
+    #[test]
+    fn ctrl_s_writes_the_buffer_and_the_poll_does_not_reload_our_own_write() {
+        let dir = TempDir::new("save");
+        let (mut app, path) = app_with_file(&dir, "a");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        key(&mut app, KeyCode::End, KeyModifiers::CONTROL);
+        press(&mut app, "bc");
+        key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "abc");
+        let v = view(&mut app);
+        assert!(!v.editor.is_dirty());
+        assert!(!v.is_stale());
+        assert_eq!(v.mode, CodeMode::Edit);
+    }
+
+    #[test]
+    fn external_change_reloads_a_clean_buffer() {
+        let dir = TempDir::new("reload");
+        let (mut app, path) = app_with_file(&dir, "old");
+        touch_later(&path, "new");
+        view(&mut app).poll_disk();
+        assert_eq!(view(&mut app).editor.text(), "new");
+    }
+
+    #[test]
+    fn external_change_never_clobbers_unsaved_edits() {
+        let dir = TempDir::new("conflict");
+        let (mut app, path) = app_with_file(&dir, "mine");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        press(&mut app, "!");
+        touch_later(&path, "theirs");
+
+        view(&mut app).poll_disk();
+        assert_eq!(view(&mut app).editor.text(), "!mine");
+        assert!(view(&mut app).message.contains("changed on disk"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs");
+
+        key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "!mine");
+    }
+
+    #[test]
+    fn save_refuses_once_on_an_unseen_disk_change() {
+        let dir = TempDir::new("unseen");
+        let (mut app, path) = app_with_file(&dir, "mine");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        press(&mut app, "!");
+        touch_later(&path, "theirs");
+
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs");
+        assert!(view(&mut app).editor.is_dirty());
+        assert!(matches!(key(&mut app, KeyCode::Char('q'), KeyModifiers::NONE), Action::None));
+        assert!(matches!(key(&mut app, KeyCode::Char('b'), KeyModifiers::NONE), Action::None));
+        assert!(matches!(app.page, Page::Problem(_)));
+
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert_eq!(view(&mut app).editor.text(), "theirs");
+        assert!(!view(&mut app).editor.is_dirty());
+    }
+
+    #[test]
+    fn help_bar_follows_the_mode() {
+        let dir = TempDir::new("help");
+        let (mut app, _) = app_with_file(&dir, "");
+        let nav: Vec<_> = { let v = match &app.page { Page::Problem(v) => v, _ => unreachable!() }; problem_keys(&app, v) };
+        assert!(nav.contains(&("Enter", "edit")));
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let Page::Problem(v) = &app.page else { unreachable!() };
+        let edit = problem_keys(&app, v);
+        assert_eq!(edit[0], ("Esc", "done"));
+        assert!(edit.contains(&("^S", "save")));
+        assert!(!edit.iter().any(|(k, _)| *k == "q"));
     }
 }

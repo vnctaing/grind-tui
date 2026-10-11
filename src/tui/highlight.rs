@@ -162,6 +162,10 @@ fn syntax(lang: Lang) -> Syntax {
     }
 }
 
+pub fn quotes(lang: Lang) -> &'static [char] {
+    syntax(lang).quotes
+}
+
 pub fn highlight_code(code: &str, lang: Lang) -> Vec<Line<'static>> {
     let syntax = syntax(lang);
     code.lines()
@@ -240,22 +244,6 @@ fn comment_style() -> Style {
     Style::default().fg(t::MUTED).add_modifier(Modifier::ITALIC)
 }
 
-pub fn with_gutter(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
-    let width = lines.len().to_string().len();
-    lines
-        .into_iter()
-        .enumerate()
-        .map(|(i, line)| {
-            let mut spans = vec![
-                Span::styled(format!("{:>width$} ", i + 1), Style::default().fg(t::MUTED)),
-                Span::styled("│ ", Style::default().fg(t::BORDER)),
-            ];
-            spans.extend(line.spans);
-            Line::from(spans)
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,13 +308,5 @@ mod tests {
     fn plain_identifiers_keep_foreground() {
         let lines = highlight_code("total", Lang::Java);
         assert_eq!(span_style(&lines, "total").and_then(|s| s.fg), Some(t::FG));
-    }
-
-    #[test]
-    fn gutter_numbers_each_line() {
-        let lines = with_gutter(highlight_code("a\nb", Lang::C));
-        assert_eq!(lines.len(), 2);
-        assert_eq!(lines[1].spans[0].content, "2 ");
-        assert_eq!(lines[1].spans[1].style.fg, Some(t::BORDER));
     }
 }
