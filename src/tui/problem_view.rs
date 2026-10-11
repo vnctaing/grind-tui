@@ -23,7 +23,15 @@ pub(super) fn draw_problem_page(f: &mut Frame, app: &App, view: &ProblemView) {
     .split(area);
     draw_top_bar(f, rows[0], app, view, problem);
     draw_body(f, rows[1], app, view, problem);
-    f.render_widget(Paragraph::new(help_line(&problem_keys(app, view))), rows[2]);
+    f.render_widget(Paragraph::new(fitted_help_line(&problem_keys(app, view), rows[2].width)), rows[2]);
+}
+
+fn fitted_help_line(items: &[(&str, &str)], width: u16) -> Line<'static> {
+    let fits = (0..=items.len())
+        .rev()
+        .find(|&n| help_line(&items[..n]).width() <= usize::from(width))
+        .unwrap_or(0);
+    help_line(&items[..fits])
 }
 
 fn draw_top_bar(f: &mut Frame, area: Rect, app: &App, view: &ProblemView, p: &Problem) {
@@ -191,8 +199,10 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App, view: &ProblemView, problem
             .lines()
             .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(t::FG)))),
     );
-    lines.push(Line::default());
-    lines.extend(examples_block(&problem.examples));
+    if !matches!(problem.body, Body::Premium) {
+        lines.push(Line::default());
+        lines.extend(examples_block(&problem.examples));
+    }
     f.render_widget(
         Paragraph::new(lines)
             .block(panel("Status", "o hide", view.focused == Panel::Output))
@@ -207,5 +217,149 @@ fn status_pill(solved: bool) -> Span<'static> {
         theme::pill("SOLVED", t::BG, t::MINT)
     } else {
         theme::pill("TODO", t::FG, t::BORDER)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::catalog::Catalog;
+    use crate::state::AppState;
+    use crate::tui::app::{Collapsed, ListFilter, Page, Scroll};
+    use ratatui::{backend::TestBackend, buffer::Buffer, style::Color, Terminal};
+
+    fn app_on(slug: &str) -> App {
+        let mut app = App::new(Catalog::embedded(), AppState::default(), vec![], ListFilter::All, None);
+        let idx = app.catalog.problems().iter().position(|p| p.slug == slug).unwrap();
+        let code = app.catalog.problems()[idx].starter(app.progress.language).to_string();
+        app.page = Page::Problem(ProblemView {
+            idx,
+            code,
+            path: std::env::temp_dir().join("grind-tui-problem-view-test").join(format!("{slug}.py")),
+            mtime: None,
+            focused: Panel::Code,
+            collapsed: Collapsed::default(),
+            scroll: Scroll::default(),
+            detached: None,
+            message: String::new(),
+        });
+        app
+    }
+
+    fn view_mut(app: &mut App) -> &mut ProblemView {
+        match &mut app.page {
+            Page::Problem(view) => view,
+            Page::List => unreachable!(),
+        }
+    }
+
+    fn render(app: &App, width: u16, height: u16) -> Buffer {
+        let Page::Problem(view) = &app.page else { unreachable!() };
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| draw_problem_page(f, app, view)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn rows(buf: &Buffer) -> Vec<String> {
+        (0..buf.area.height)
+            .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    fn text(buf: &Buffer) -> String {
+        rows(buf).join("\n")
+    }
+
+    fn border_fg(buf: &Buffer, title: &str) -> Color {
+        let needle: Vec<char> = format!("╭ {title} ").chars().collect();
+        for y in 0..buf.area.height {
+            let row: Vec<char> = (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
+                .collect();
+            if let Some(x) = row.windows(needle.len()).position(|w| w == needle.as_slice()) {
+                return buf[(x as u16, y)].fg;
+            }
+        }
+        panic!("no {title} panel");
+    }
+
+    #[test]
+    fn free_description_renders_markdown_without_raw_markup() {
+        let app = app_on("two-sum");
+        let screen = text(&render(&app, 140, 60));
+        assert!(screen.contains("Example 1:"));
+        for raw in ["&lt;", "&#39;", "**", "`"] {
+            assert!(!screen.contains(raw), "raw {raw:?} leaked");
+        }
+    }
+
+    #[test]
+    fn premium_problem_shows_badge_link_and_examples_once() {
+        let app = app_on("meeting-rooms");
+        let screen = text(&render(&app, 140, 40));
+        assert!(screen.contains("PREMIUM"));
+        assert!(screen.contains("https://leetcode.com/problems/meeting-rooms/"));
+        assert_eq!(screen.matches("[[0,30],[5,10],[15,20]]").count(), 1);
+    }
+
+    #[test]
+    fn status_pill_flips_after_toggle_solved() {
+        let mut app = app_on("two-sum");
+        let before = text(&render(&app, 140, 40));
+        assert!(before.contains("TODO") && !before.contains("SOLVED"));
+        app.toggle_solved();
+        let after = text(&render(&app, 140, 40));
+        assert!(after.contains("SOLVED") && !after.contains("TODO"));
+        app.toggle_solved();
+        let again = text(&render(&app, 140, 40));
+        assert!(again.contains("TODO") && !again.contains("SOLVED"));
+    }
+
+    #[test]
+    fn only_the_focused_panel_border_is_magenta() {
+        let mut app = app_on("two-sum");
+        for focus in [Panel::Code, Panel::Description, Panel::Output] {
+            view_mut(&mut app).focused = focus;
+            let buf = render(&app, 140, 40);
+            for (panel, title) in [(Panel::Description, "Description"), (Panel::Code, "Code"), (Panel::Output, "Status")] {
+                let expected = if panel == focus { t::MAGENTA } else { t::BORDER };
+                assert_eq!(border_fg(&buf, title), expected, "{title} with {focus:?} focused");
+            }
+        }
+    }
+
+    #[test]
+    fn help_bar_never_cuts_an_item() {
+        let app = app_on("two-sum");
+        for width in [20, 40, 60, 80, 100, 140] {
+            let buf = render(&app, width, 24);
+            let bottom = rows(&buf).pop().unwrap();
+            let bottom = bottom.trim_end();
+            let Page::Problem(view) = &app.page else { unreachable!() };
+            let keys = problem_keys(&app, view);
+            assert!(
+                bottom.is_empty() || keys.iter().any(|(_, desc)| bottom.ends_with(desc)),
+                "help bar cut at width {width}: {bottom:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tiny_and_common_sizes_never_panic() {
+        let mut sizes: Vec<(u16, u16)> = (0..=12).flat_map(|w| (0..=14).map(move |h| (w, h))).collect();
+        sizes.extend([(80, 24), (140, 40)]);
+        for slug in ["two-sum", "meeting-rooms"] {
+            let mut app = app_on(slug);
+            for mask in 0..8u8 {
+                view_mut(&mut app).collapsed = Collapsed {
+                    desc: mask & 1 != 0,
+                    code: mask & 2 != 0,
+                    output: mask & 4 != 0,
+                };
+                for &(w, h) in &sizes {
+                    render(&app, w, h);
+                }
+            }
+        }
     }
 }
