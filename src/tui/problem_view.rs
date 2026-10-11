@@ -1,211 +1,203 @@
 use super::app::{problem_keys, App, Panel, ProblemView};
-use crate::catalog::{Body, Difficulty, Problem};
-use super::highlight::highlight_code;
+use super::highlight::{highlight_code, with_gutter};
+use super::markdown::render_markdown;
+use super::theme::{self, help_line, panel, t};
+use crate::catalog::{Body, Problem};
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    layout::{Constraint, Layout, Rect},
+    style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Paragraph, Wrap},
     Frame,
 };
 
 pub(super) fn draw_problem_page(f: &mut Frame, app: &App, view: &ProblemView) {
     let area = f.area();
-    let outer = Layout::default().direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).split(area);
+    f.render_widget(Block::default().style(Style::default().bg(t::BG)), area);
     let problem = &app.catalog.problems()[view.idx];
-    draw_problem_title(f, outer[0], problem);
-    draw_problem_sections(f, outer[1], app, view, problem);
-    draw_problem_status(f, outer[2], app, view);
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .split(area);
+    draw_top_bar(f, rows[0], app, view, problem);
+    draw_body(f, rows[1], app, view, problem);
+    f.render_widget(Paragraph::new(help_line(&problem_keys(app, view))), rows[2]);
 }
 
-fn draw_problem_title(f: &mut Frame, area: Rect, p: &Problem) {
-    let title = format!(" {} . {} [{}] ", p.id.0, p.title, difficulty_label(p.difficulty));
-    let style = Style::default().fg(difficulty_color(p.difficulty)).add_modifier(Modifier::BOLD);
-    f.render_widget(Paragraph::new(title).style(style), area);
-}
-
-fn draw_problem_sections(f: &mut Frame, area: Rect, app: &App, view: &ProblemView, problem: &Problem) {
-    let desc_width = if view.collapsed.desc { Constraint::Length(0) } else { Constraint::Percentage(40) };
-    let cols = Layout::default().direction(Direction::Horizontal)
-        .constraints([desc_width, Constraint::Min(0)]).split(area);
-
-    if !view.collapsed.desc {
-        draw_desc_section(f, cols[0], view, problem);
-    }
-
-    // Editor bar is always visible at the top of the right column
-    let editor_bar_height = 3u16;
-    let output_height = if view.collapsed.output { Constraint::Length(1) } else { Constraint::Percentage(25) };
-
-    if view.collapsed.code {
-        let right_rows = Layout::default().direction(Direction::Vertical)
-            .constraints([Constraint::Length(editor_bar_height), Constraint::Length(1), Constraint::Min(0)])
-            .split(cols[1]);
-        draw_editor_bar(f, right_rows[0], app, view);
-        f.render_widget(
-            Paragraph::new(Span::styled(
-                " [c] ▸ Code preview (hidden) ",
-                Style::default().fg(Color::DarkGray),
-            )),
-            right_rows[1],
-        );
-        draw_output_section(f, right_rows[2], view, problem);
-    } else {
-        let right_rows = Layout::default().direction(Direction::Vertical)
-            .constraints([Constraint::Length(editor_bar_height), Constraint::Min(0), output_height])
-            .split(cols[1]);
-        draw_editor_bar(f, right_rows[0], app, view);
-        draw_code_section(f, right_rows[1], app, view);
-        draw_output_section(f, right_rows[2], view, problem);
-    }
-}
-
-fn draw_desc_section(f: &mut Frame, area: Rect, view: &ProblemView, problem: &Problem) {
-    let focused = view.focused == Panel::Description;
-    let content = match &problem.body {
-        Body::Free { description, .. } => description.clone(),
-        Body::Premium => format!(
-            "Premium problem: the statement is not available offline.\nhttps://leetcode.com/problems/{}/",
-            problem.slug,
+fn draw_top_bar(f: &mut Frame, area: Rect, app: &App, view: &ProblemView, p: &Problem) {
+    let mut spans = vec![
+        theme::pill(&p.id.0.to_string(), t::BG, t::CYAN),
+        Span::styled(
+            format!(" {}", p.title),
+            Style::default().fg(t::FG).add_modifier(Modifier::BOLD),
         ),
+        Span::raw(" "),
+        theme::pill(
+            theme::difficulty_label(p.difficulty),
+            t::BG,
+            theme::difficulty_color(p.difficulty),
+        ),
+        Span::raw(" "),
+        theme::pill(app.progress.language.label(), t::BG, t::PURPLE),
+    ];
+    if matches!(p.body, Body::Premium) {
+        spans.push(Span::raw(" "));
+        spans.push(theme::pill("PREMIUM", t::BG, t::YELLOW));
+    }
+    spans.push(Span::raw(" "));
+    spans.push(status_pill(app.is_solved(view.idx)));
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn draw_body(f: &mut Frame, area: Rect, app: &App, view: &ProblemView, problem: &Problem) {
+    let right = if view.collapsed.desc {
+        let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+        draw_collapsed(f, rows[0], "Description", "p");
+        rows[1]
+    } else {
+        let cols = Layout::horizontal([Constraint::Percentage(40), Constraint::Min(0)]).split(area);
+        draw_description(f, cols[0], view, problem);
+        cols[1]
     };
-    let title = if focused { " Description [focused — p to collapse] " } else { " [p] Description " };
-    let border_style = if focused { Style::default().fg(Color::Cyan) } else { Style::default() };
+    draw_right(f, right, app, view, problem);
+}
+
+fn draw_right(f: &mut Frame, area: Rect, app: &App, view: &ProblemView, problem: &Problem) {
+    let code_h = if view.collapsed.code { Constraint::Length(1) } else { Constraint::Min(0) };
+    let status_h = if view.collapsed.output { Constraint::Length(1) } else { Constraint::Percentage(35) };
+    let rows = Layout::vertical([Constraint::Length(2), code_h, status_h]).split(area);
+
+    draw_editor_bar(f, rows[0], app, view);
+    if view.collapsed.code {
+        draw_collapsed(f, rows[1], "Code", "c");
+    } else {
+        draw_code(f, rows[1], app, view);
+    }
+    if view.collapsed.output {
+        draw_collapsed(f, rows[2], "Status", "o");
+    } else {
+        draw_status(f, rows[2], app, view, problem);
+    }
+}
+
+fn draw_collapsed(f: &mut Frame, area: Rect, label: &str, key: &str) {
+    let text = format!(" ▸ {label}  {key} to expand");
     f.render_widget(
-        Paragraph::new(content)
-            .block(Block::default().borders(Borders::ALL).title(title).border_style(border_style))
+        Paragraph::new(Span::styled(text, Style::default().fg(t::MUTED))),
+        area,
+    );
+}
+
+fn draw_description(f: &mut Frame, area: Rect, view: &ProblemView, problem: &Problem) {
+    let lines = match &problem.body {
+        Body::Free { description, .. } => render_markdown(description),
+        Body::Premium => premium_lines(problem),
+    };
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(panel("Description", "p hide", view.focused == Panel::Description))
             .wrap(Wrap { trim: false })
             .scroll((view.scroll.desc, 0)),
         area,
     );
 }
 
+fn premium_lines(p: &Problem) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "Premium problem. The statement is not in the offline catalog.",
+            Style::default().fg(t::MUTED),
+        )),
+        Line::from(Span::styled(
+            format!("https://leetcode.com/problems/{}/", p.slug),
+            Style::default().fg(t::CYAN).add_modifier(Modifier::UNDERLINED),
+        )),
+        Line::default(),
+    ];
+    lines.extend(examples_block(&p.examples));
+    lines
+}
+
+fn examples_block(examples: &str) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(Span::styled(
+        "Examples",
+        Style::default().fg(t::CYAN).add_modifier(Modifier::BOLD),
+    ))];
+    lines.extend(examples.lines().map(|l| {
+        Line::from(Span::styled(l.to_string(), Style::default().fg(t::FG)))
+    }));
+    lines
+}
+
 fn draw_editor_bar(f: &mut Frame, area: Rect, app: &App, view: &ProblemView) {
-    let file_path = view.path.display().to_string();
-
-    let line1: Line = if let Some(ref name) = view.detached {
-        Line::from(vec![
-            Span::styled(" ⟳ ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{} ", name), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-            Span::styled("auto-syncing on save  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("[y]", Style::default().fg(Color::Yellow)),
-            Span::styled("force sync", Style::default().fg(Color::DarkGray)),
-        ])
-    } else {
-        let mut spans = vec![Span::styled(" ✏  Start coding: ", Style::default().fg(Color::DarkGray))];
-        for ed in &app.editors {
-            spans.push(Span::styled(format!("[{}]", ed.key), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
-            spans.push(Span::styled(format!("{} ", ed.name), Style::default().fg(Color::White)));
+    let command = app.editors.first().map_or("vim", |e| e.command.as_str());
+    let path = view.path.display().to_string();
+    let (first, second) = match &view.detached {
+        Some(name) => (
+            Line::from(Span::styled(
+                format!("↻ {name} auto-syncs on save"),
+                Style::default().fg(t::MINT),
+            )),
+            Line::from(Span::styled(path, Style::default().fg(t::MUTED))),
+        ),
+        None => {
+            let keys: Vec<(&str, &str)> = app
+                .editors
+                .iter()
+                .map(|ed| (ed.key.as_str(), ed.name.as_str()))
+                .collect();
+            let mut spans = vec![Span::styled("open in  ", Style::default().fg(t::MUTED))];
+            spans.extend(help_line(&keys).spans);
+            (
+                Line::from(spans),
+                Line::from(Span::styled(
+                    format!("{command} {path}"),
+                    Style::default().fg(t::MUTED),
+                )),
+            )
         }
-        Line::from(spans)
     };
-
-    let line2: Line = if file_path.is_empty() {
-        Line::from("")
-    } else {
-        let cmd = view.detached.as_deref()
-            .or_else(|| app.editors.first().map(|e| e.command.as_str()))
-            .unwrap_or("vim");
-        Line::from(vec![
-            Span::styled(" 💡 New tab: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("{} {}", cmd, file_path), Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
-            Span::styled("  [Y]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            Span::styled("yank", Style::default().fg(Color::DarkGray)),
-        ])
-    };
-
-    f.render_widget(
-        Paragraph::new(vec![line1, line2])
-            .block(Block::default().borders(Borders::BOTTOM).border_style(Style::default().fg(Color::DarkGray))),
-        area,
-    );
+    f.render_widget(Paragraph::new(vec![first, second]), area);
 }
 
-fn draw_code_section(f: &mut Frame, area: Rect, app: &App, view: &ProblemView) {
-    // Code panel is always read-only — never interactive
-    let (title, border_style) = if let Some(ref name) = view.detached {
-        (
-            format!(" ⟳ Live from {} — read-only  [c]hide ", name),
-            Style::default().fg(Color::DarkGray),
-        )
-    } else {
-        (
-            format!(" Code preview — read-only  [c]hide "),
-            Style::default().fg(Color::DarkGray),
-        )
+fn draw_code(f: &mut Frame, area: Rect, app: &App, view: &ProblemView) {
+    let hint = match &view.detached {
+        Some(name) => format!("live from {name} · c hide"),
+        None => "read-only · c hide".to_string(),
     };
-    let block = Block::default().borders(Borders::ALL).title(title).border_style(border_style);
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    let highlighted: Vec<Line<'static>> = highlight_code(
-        &view.code,
-        app.progress.language,
-    ).into_iter().enumerate().map(|(i, mut l)| {
-        l.spans.insert(0, Span::styled(format!("{:>3} ", i + 1), Style::default().fg(Color::DarkGray)));
-        l
-    }).collect();
-
-    f.render_widget(
-        Paragraph::new(highlighted)
-            .wrap(Wrap { trim: false })
-            .scroll((view.scroll.code, 0)),
-        inner,
-    );
-}
-
-fn draw_output_section(f: &mut Frame, area: Rect, view: &ProblemView, problem: &Problem) {
-    let focused = view.focused == Panel::Output;
-    if view.collapsed.output {
-        f.render_widget(
-            Paragraph::new(Span::styled(" [o] Output ▸ (expand) ", Style::default().fg(Color::DarkGray))),
-            area,
-        );
-        return;
-    }
-    let border_style = if focused { Style::default().fg(Color::Cyan) } else { Style::default() };
-    let title = if focused { " Output [focused — o to collapse] " } else { " [o] Output " };
-
-    let output = format!("{}\n\nExamples:\n{}", view.message, problem.examples);
-    let raw: Vec<&str> = output.lines().collect();
-    let lines: Vec<Line> = raw.iter().map(|line| {
-        let style = if line.starts_with("Marked solved") {
-            Style::default().fg(Color::Green)
-        } else if line.starts_with("Examples:") {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        };
-        Line::from(Span::styled(line.to_string(), style))
-    }).collect();
-
+    let lines = with_gutter(highlight_code(&view.code, app.progress.language));
     f.render_widget(
         Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title(title).border_style(border_style))
-            .wrap(Wrap { trim: false }).scroll((view.scroll.output, 0)),
+            .block(panel("Code", &hint, view.focused == Panel::Code))
+            .scroll((view.scroll.code, 0)),
         area,
     );
 }
 
-fn draw_problem_status(f: &mut Frame, area: Rect, app: &App, view: &ProblemView) {
-    let editor_keys: String = app.editors.iter()
-        .map(|ed| format!("[{}]{} ", ed.key, ed.name))
-        .collect();
-    let keys: String = problem_keys(app, view).iter()
-        .map(|(k, d)| format!("[{}]{}  ", k, d))
-        .collect();
-    let status = format!(" {}{}", editor_keys, keys);
+fn draw_status(f: &mut Frame, area: Rect, app: &App, view: &ProblemView, problem: &Problem) {
+    let mut lines = vec![Line::from(status_pill(app.is_solved(view.idx)))];
+    lines.extend(
+        view.message
+            .lines()
+            .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(t::FG)))),
+    );
+    lines.push(Line::default());
+    lines.extend(examples_block(&problem.examples));
     f.render_widget(
-        Paragraph::new(status).style(Style::default().bg(Color::DarkGray).fg(Color::White)),
+        Paragraph::new(lines)
+            .block(panel("Status", "o hide", view.focused == Panel::Output))
+            .wrap(Wrap { trim: false })
+            .scroll((view.scroll.output, 0)),
         area,
     );
 }
 
-fn difficulty_color(d: Difficulty) -> Color {
-    match d { Difficulty::Easy => Color::Green, Difficulty::Medium => Color::Yellow, Difficulty::Hard => Color::Red }
-}
-
-fn difficulty_label(d: Difficulty) -> &'static str {
-    match d { Difficulty::Easy => "Easy", Difficulty::Medium => "Medium", Difficulty::Hard => "Hard" }
+fn status_pill(solved: bool) -> Span<'static> {
+    if solved {
+        theme::pill("SOLVED", t::BG, t::MINT)
+    } else {
+        theme::pill("TODO", t::FG, t::BORDER)
+    }
 }
