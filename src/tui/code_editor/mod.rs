@@ -10,6 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use history::{EditKind, UndoStack};
 use ratatui::layout::Rect;
 use selection::{Cursor, Motion, Selection};
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::ops::Range;
 use std::time::Instant;
@@ -48,6 +49,7 @@ fn command(key: KeyEvent) -> Option<Command> {
     let word = ctrl || alt;
     let mv = |m| Some(Command::Move(m, shift));
     match key.code {
+        KeyCode::Char(c) if ctrl && alt => Some(Command::Insert(c)),
         KeyCode::Char(c) if ctrl => match c {
             'a' | 'A' => Some(Command::SelectAll),
             'c' | 'C' => Some(Command::Copy),
@@ -60,7 +62,7 @@ fn command(key: KeyEvent) -> Option<Command> {
         },
         KeyCode::Char('b') if alt => mv(Motion::WordLeft),
         KeyCode::Char('f') if alt => mv(Motion::WordRight),
-        KeyCode::Char(c) if !alt => Some(Command::Insert(c)),
+        KeyCode::Char(c) => Some(Command::Insert(c)),
         KeyCode::Enter => Some(Command::Newline),
         KeyCode::Tab => Some(Command::Indent),
         KeyCode::BackTab => Some(Command::Outdent),
@@ -129,8 +131,14 @@ impl CodeEditor {
         }
     }
 
+    #[cfg(test)]
     pub fn text(&self) -> &str {
         self.buffer.text()
+    }
+
+    /// The text as it should be written to disk, in the file's own line endings.
+    pub fn contents(&self) -> Cow<'_, str> {
+        self.buffer.contents()
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -195,7 +203,7 @@ impl CodeEditor {
                 self.cursor.apply(&self.buffer, motion, extend, page);
             }
             Command::SelectAll => self.cursor.set(Selection { anchor: 0, head: self.buffer.len() }),
-            Command::Copy => return Effect::Copy(self.copy()),
+            Command::Copy => return self.copy(),
             Command::Cut => return self.cut(now),
             Command::Paste => self.paste_clip(now),
             Command::Undo => {
@@ -290,8 +298,9 @@ impl CodeEditor {
         let mut edits = Vec::new();
         for line in self.touched_lines().rev() {
             let start = self.buffer.line_range(line).start;
-            let len = remove(self.buffer.line(line));
-            if len == 0 && insert.is_empty() {
+            let text = self.buffer.line(line);
+            let len = remove(text);
+            if len == 0 && (insert.is_empty() || text.is_empty()) {
                 continue;
             }
             let rec = self.buffer.edit(start..start + len, insert);
@@ -348,29 +357,34 @@ impl CodeEditor {
     }
 
     /// The selection, or the caret's whole line when nothing is selected.
-    fn clip_range(&self) -> (Range<usize>, Clip) {
+    /// A blank line with no selection has nothing worth copying.
+    fn clip_range(&self) -> Option<(Range<usize>, Clip)> {
         let sel = self.cursor.sel;
         if !sel.is_empty() {
             let range = sel.range();
             let text = self.buffer.text()[range.clone()].to_string();
-            return (range, Clip { text, whole_line: false });
+            return Some((range, Clip { text, whole_line: false }));
         }
         let line = self.buffer.pos(sel.head).line;
         let range = self.buffer.line_range(line);
-        let text = format!("{}\n", &self.buffer.text()[range.clone()]);
+        let text = &self.buffer.text()[range.clone()];
+        if text.trim().is_empty() {
+            return None;
+        }
+        let text = format!("{text}\n");
         let with_newline = range.start..(range.end + 1).min(self.buffer.len());
-        (with_newline, Clip { text, whole_line: true })
+        Some((with_newline, Clip { text, whole_line: true }))
     }
 
-    fn copy(&mut self) -> String {
-        let (_, clip) = self.clip_range();
+    fn copy(&mut self) -> Effect {
+        let Some((_, clip)) = self.clip_range() else { return Effect::None };
         let text = clip.text.clone();
         self.clip = clip;
-        text
+        Effect::Copy(text)
     }
 
     fn cut(&mut self, now: Instant) -> Effect {
-        let (range, clip) = self.clip_range();
+        let Some((range, clip)) = self.clip_range() else { return Effect::None };
         let text = clip.text.clone();
         self.clip = clip;
         self.edit(range.clone(), "", range.start, EditKind::Other, now);

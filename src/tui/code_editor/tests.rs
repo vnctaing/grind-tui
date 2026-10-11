@@ -425,3 +425,53 @@ fn tiny_areas_never_panic() {
         }
     }
 }
+
+#[test]
+fn copy_and_cut_on_a_blank_line_do_nothing() {
+    let mut e = py("a\n\n    \nb");
+    e.press(KeyCode::Down);
+    assert_eq!(e.ctrl('c'), Effect::None);
+    assert_eq!(e.ctrl('x'), Effect::None);
+    e.press(KeyCode::Down);
+    assert_eq!(e.ctrl('x'), Effect::None);
+    assert_eq!(e.text(), "a\n\n    \nb");
+
+    let mut e = py("a");
+    e.press(KeyCode::End);
+    e.press(KeyCode::Enter);
+    assert_eq!(e.ctrl('x'), Effect::None);
+    e.ctrl('z');
+    assert_eq!(e.text(), "a");
+}
+
+#[test]
+fn ctrl_alt_chords_type_text_and_alt_letters_insert_except_word_jumps() {
+    let mut e = py("");
+    e.key(KeyCode::Char('@'), KeyModifiers::CONTROL | KeyModifiers::ALT);
+    assert_eq!(e.key(KeyCode::Char('s'), KeyModifiers::CONTROL | KeyModifiers::ALT), Effect::None);
+    e.key(KeyCode::Char('x'), KeyModifiers::ALT);
+    assert_eq!(e.text(), "@sx");
+    e.key(KeyCode::Char('b'), KeyModifiers::ALT);
+    assert_eq!((e.text(), e.head()), ("@sx", 1));
+}
+
+#[test]
+fn tab_over_lines_leaves_empty_lines_empty() {
+    let mut e = py("a\n\nb");
+    e.ctrl('a');
+    e.press(KeyCode::Tab);
+    assert_eq!(e.text(), "    a\n\n    b");
+    e.press(KeyCode::BackTab);
+    assert_eq!(e.text(), "a\n\nb");
+}
+
+#[test]
+fn contents_keep_the_files_crlf_line_endings() {
+    let mut e = py("a\r\nb");
+    e.press(KeyCode::Down);
+    e.press(KeyCode::End);
+    e.press(KeyCode::Enter);
+    e.type_str("c");
+    assert_eq!(e.text(), "a\nb\nc");
+    assert_eq!(e.ed.contents(), "a\r\nb\r\nc");
+}

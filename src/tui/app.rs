@@ -43,7 +43,8 @@ pub struct Scroll { pub desc: u16, pub output: u16 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodeMode { Navigate, Edit }
 
-const CONFLICT: &str = "File changed on disk while you have unsaved edits.\nCtrl-S overwrites it, Ctrl-R reloads it (discards your edits).";
+const CONFLICT: &str = "File changed on disk while you have unsaved edits.\nCtrl-S overwrites it, Ctrl-R twice reloads it (discards your edits).";
+const CONFIRM_RELOAD: &str = "Unsaved changes, press Ctrl-R again to discard them and reload.";
 
 pub struct ProblemView {
     pub idx: usize,
@@ -56,6 +57,8 @@ pub struct ProblemView {
     /// Disk mtime of an external change the user was told about while holding
     /// unsaved edits. A save overwrites only a change the user has seen.
     pub conflict: Option<SystemTime>,
+    /// Set by a Ctrl-R refused over unsaved edits; the next Ctrl-R discards them.
+    pub reload_armed: bool,
     pub focused: Panel,
     pub collapsed: Collapsed,
     pub scroll: Scroll,
@@ -78,6 +81,7 @@ impl ProblemView {
             mtime: modified(&path),
             path,
             conflict: None,
+            reload_armed: false,
             focused: Panel::Code,
             collapsed: Collapsed::default(),
             scroll: Scroll::default(),
@@ -118,7 +122,7 @@ impl ProblemView {
             self.message = CONFLICT.to_string();
             return false;
         }
-        match std::fs::write(&self.path, self.editor.text()) {
+        match std::fs::write(&self.path, self.editor.contents().as_bytes()) {
             Ok(()) => {
                 self.mtime = modified(&self.path);
                 self.conflict = None;
@@ -139,11 +143,19 @@ impl ProblemView {
         self.mode = CodeMode::Edit;
     }
 
+    /// Leaving edit mode saves, but never over an external change: the user
+    /// stays in edit mode to choose between Ctrl-S and Ctrl-R.
     pub fn stop_editing(&mut self) {
-        self.mode = CodeMode::Navigate;
         if self.editor.is_dirty() {
-            self.save();
+            if self.conflict.is_some() {
+                self.message = CONFLICT.to_string();
+                return;
+            }
+            if !self.save() {
+                return;
+            }
         }
+        self.mode = CodeMode::Navigate;
     }
 
     /// True when the watched file changed on disk since the last read.
@@ -354,10 +366,16 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
 }
 
 fn handle_edit_key(view: &mut ProblemView, key: KeyEvent) -> Action {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::ALT);
+    let reload = ctrl && matches!(key.code, KeyCode::Char('r' | 'R'));
+    let armed = std::mem::take(&mut view.reload_armed);
     match key.code {
         KeyCode::Esc => view.stop_editing(),
-        KeyCode::Char('r' | 'R') if ctrl => {
+        _ if reload && view.editor.is_dirty() && !armed => {
+            view.reload_armed = true;
+            view.message = CONFIRM_RELOAD.to_string();
+        }
+        _ if reload => {
             view.message = match view.reload() {
                 Ok(()) => "Reloaded from disk.".to_string(),
                 Err(e) => format!("Reload failed: {e}"),
@@ -669,14 +687,96 @@ mod tests {
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs");
         assert!(view(&mut app).editor.is_dirty());
-        assert!(matches!(key(&mut app, KeyCode::Char('q'), KeyModifiers::NONE), Action::None));
-        assert!(matches!(key(&mut app, KeyCode::Char('b'), KeyModifiers::NONE), Action::None));
-        assert!(matches!(app.page, Page::Problem(_)));
+        assert_eq!(view(&mut app).mode, CodeMode::Edit);
 
-        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
         key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
         assert_eq!(view(&mut app).editor.text(), "theirs");
         assert!(!view(&mut app).editor.is_dirty());
+    }
+
+    #[test]
+    fn esc_never_overwrites_a_seen_disk_change() {
+        let dir = TempDir::new("seen");
+        let (mut app, path) = app_with_file(&dir, "mine");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        press(&mut app, "!");
+        touch_later(&path, "theirs");
+        view(&mut app).poll_disk();
+
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs");
+        let v = view(&mut app);
+        assert!(v.editor.is_dirty());
+        assert_eq!(v.mode, CodeMode::Edit);
+        assert!(v.message.contains("changed on disk"));
+
+        key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "!mine");
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(view(&mut app).mode, CodeMode::Navigate);
+    }
+
+    #[test]
+    fn ctrl_r_over_unsaved_edits_needs_a_second_press() {
+        let dir = TempDir::new("confirm");
+        let (mut app, path) = app_with_file(&dir, "mine");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        press(&mut app, "!");
+        std::fs::write(&path, "theirs").unwrap();
+
+        key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert_eq!(view(&mut app).editor.text(), "!mine");
+        assert!(view(&mut app).message.contains("Ctrl-R again"));
+        key(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert_eq!(view(&mut app).editor.text(), "!mine");
+
+        key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert_eq!(view(&mut app).editor.text(), "theirs");
+        std::fs::write(&path, "again").unwrap();
+        key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert_eq!(view(&mut app).editor.text(), "again");
+    }
+
+    #[test]
+    fn ctrl_alt_r_types_instead_of_reloading() {
+        let dir = TempDir::new("altgr");
+        let (mut app, _) = app_with_file(&dir, "");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL | KeyModifiers::ALT);
+        assert_eq!(view(&mut app).editor.text(), "r");
+    }
+
+    #[test]
+    fn save_keeps_crlf_line_endings() {
+        let dir = TempDir::new("crlf");
+        let (mut app, path) = app_with_file(&dir, "a\r\nb");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        press(&mut app, "x");
+        key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "xa\r\nb");
+    }
+
+    #[test]
+    fn dirty_buffer_blocks_language_switch_and_external_editors() {
+        let dir = TempDir::new("guard");
+        let (mut app, path) = app_with_file(&dir, "mine");
+        app.editors = vec![EditorDef { name: "nvim".into(), key: "e".into(), command: "nvim".into(), detach: false }];
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        press(&mut app, "!");
+        view(&mut app).mode = CodeMode::Navigate;
+        let lang = app.progress.language;
+
+        press(&mut app, "l");
+        assert_eq!(app.progress.language, lang);
+        assert_eq!(view(&mut app).path, path);
+        assert_eq!(view(&mut app).editor.text(), "!mine");
+        assert!(matches!(key(&mut app, KeyCode::Char('e'), KeyModifiers::NONE), Action::None));
+        assert!(view(&mut app).message.contains("Unsaved"));
+
+        view(&mut app).editor.mark_saved();
+        assert!(matches!(key(&mut app, KeyCode::Char('e'), KeyModifiers::NONE), Action::LaunchEditor(_)));
     }
 
     #[test]

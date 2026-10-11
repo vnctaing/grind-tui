@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::ops::Range;
 use unicode_width::UnicodeWidthChar;
 
@@ -18,20 +19,32 @@ pub struct EditRecord {
 }
 
 /// Every offset is a byte offset into `text` that lies on a char boundary.
+/// `text` always uses `\n`; `crlf` remembers a file that used `\r\n` so
+/// `contents` writes it back the same way.
 pub struct Buffer {
     text: String,
     line_starts: Vec<usize>,
+    crlf: bool,
 }
 
 impl Buffer {
     pub fn new(text: &str) -> Buffer {
+        let crlf = text.contains("\r\n");
         let text = text.replace("\r\n", "\n");
         let line_starts = line_starts(&text);
-        Buffer { text, line_starts }
+        Buffer { text, line_starts, crlf }
     }
 
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    pub fn contents(&self) -> Cow<'_, str> {
+        if self.crlf {
+            Cow::Owned(self.text.replace('\n', "\r\n"))
+        } else {
+            Cow::Borrowed(&self.text)
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -158,8 +171,12 @@ mod tests {
     }
 
     #[test]
-    fn crlf_is_normalized() {
-        assert_eq!(Buffer::new("a\r\nb").text(), "a\nb");
+    fn crlf_is_normalized_for_editing_and_restored_for_writing() {
+        let mut b = Buffer::new("a\r\nb");
+        assert_eq!(b.text(), "a\nb");
+        b.edit(1..1, "\nx");
+        assert_eq!(b.contents(), "a\r\nx\r\nb");
+        assert_eq!(Buffer::new("a\nb").contents(), "a\nb");
     }
 
     #[test]
