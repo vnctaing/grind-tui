@@ -141,7 +141,7 @@ fn draw_code_section(f: &mut Frame, area: Rect, app: &App, view: &ProblemView) {
 
     let highlighted: Vec<Line<'static>> = highlight_code(
         &view.code,
-        app.progress.language.slug(),
+        app.progress.language,
     ).into_iter().enumerate().map(|(i, mut l)| {
         l.spans.insert(0, Span::styled(format!("{:>3} ", i + 1), Style::default().fg(Color::DarkGray)));
         l
