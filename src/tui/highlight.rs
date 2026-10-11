@@ -205,8 +205,6 @@ fn highlight_line(line: &str, syntax: &Syntax) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Byte length of a string literal starting at `s[0] == quote`, honoring backslash escapes.
-/// An unterminated literal runs to the end of the line.
 fn string_len(s: &str, quote: char) -> usize {
     let mut escaped = false;
     for (i, c) in s.char_indices().skip(1) {
@@ -242,7 +240,6 @@ fn comment_style() -> Style {
     Style::default().fg(t::MUTED).add_modifier(Modifier::ITALIC)
 }
 
-/// Prefixes each line with its 1-based number and a border bar.
 pub fn with_gutter(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
     let width = lines.len().to_string().len();
     lines

@@ -7,7 +7,7 @@ use super::theme::t;
 
 const LABELS: [&str; 3] = ["Input:", "Output:", "Explanation:"];
 
-/// Renders the markdown-lite grammar emitted by scripts/gen_catalog.py.
+/// The input grammar is written by scripts/gen_catalog.py; a change there needs a matching change here.
 pub fn render_markdown(text: &str) -> Vec<Line<'static>> {
     text.lines().map(render_line).collect()
 }
@@ -177,6 +177,18 @@ mod tests {
         assert_eq!(label.style.fg, Some(t::CYAN));
         assert!(label.style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(span(&lines, " nums = [1]").style.fg, Some(t::FG));
+    }
+
+    #[test]
+    fn pre_lines_have_border_prefix() {
+        let lines = render_markdown("    Input: nums = [1]\n    Output: 1");
+        assert_eq!(lines.len(), 2);
+        for line in &lines {
+            assert_eq!(line.spans[0].content, "│ ");
+            assert_eq!(line.spans[0].style.fg, Some(t::BORDER));
+        }
+        assert_eq!(span(&lines, "Output:").style.fg, Some(t::CYAN));
+        assert_eq!(span(&lines, " 1").style.fg, Some(t::FG));
     }
 
     #[test]
