@@ -248,6 +248,7 @@ pub fn list_keys(app: &App) -> Vec<(&'static str, &'static str)> {
 pub fn problem_keys(app: &App, view: &ProblemView) -> Vec<(&'static str, &'static str)> {
     vec![
         ("b", "back"),
+        ("q", "quit"),
         ("x", if app.is_solved(view.idx) { "unsolve" } else { "solved" }),
         ("l", app.progress.language.label()),
         ("p", "desc"),
@@ -256,7 +257,6 @@ pub fn problem_keys(app: &App, view: &ProblemView) -> Vec<(&'static str, &'stati
         ("Tab", "p/o"),
         ("y", "sync"),
         ("Y", "yank"),
-        ("q", "quit"),
     ]
 }
 

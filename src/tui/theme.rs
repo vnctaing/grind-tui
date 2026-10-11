@@ -121,8 +121,8 @@ pub fn progress_bar(done: usize, total: usize, width: u16) -> Vec<Span<'static>>
         done.min(total) * width / total
     };
     vec![
-        Span::styled("▰".repeat(filled), Style::default().fg(t::MAGENTA)),
-        Span::styled("▱".repeat(width - filled), Style::default().fg(t::BORDER)),
+        Span::styled("━".repeat(filled), Style::default().fg(t::MAGENTA)),
+        Span::styled("─".repeat(width - filled), Style::default().fg(t::BORDER)),
         Span::styled(format!(" {done}/{total}"), Style::default().fg(t::MUTED)),
     ]
 }
@@ -132,7 +132,7 @@ mod tests {
     use super::*;
 
     fn filled_glyphs(spans: &[Span]) -> usize {
-        spans.iter().map(|s| s.content.matches('▰').count()).sum()
+        spans.iter().map(|s| s.content.matches('━').count()).sum()
     }
 
     #[test]
@@ -140,7 +140,7 @@ mod tests {
         let spans = progress_bar(3, 10, 10);
         assert_eq!(filled_glyphs(&spans), 3);
         assert_eq!(spans[0].style.fg, Some(t::MAGENTA));
-        assert_eq!(spans[1].content.matches('▱').count(), 7);
+        assert_eq!(spans[1].content.matches('─').count(), 7);
     }
 
     #[test]

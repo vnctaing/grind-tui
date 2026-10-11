@@ -18,13 +18,16 @@ use crossterm::{
 use editor::EditorDef;
 use list_view::draw_list_page;
 use problem_view::draw_problem_page;
-use ratatui::{backend::CrosstermBackend, Frame, Terminal};
+use ratatui::{backend::CrosstermBackend, style::Style, Frame, Terminal};
+use theme::t;
 use std::io;
 use std::time::Duration;
 
 // ── Drawing ───────────────────────────────────────────────────────────────────
 
 fn draw(f: &mut Frame, app: &mut App) {
+    let area = f.area();
+    f.buffer_mut().set_style(area, Style::default().fg(t::FG).bg(t::BG));
     match &app.page {
         Page::List => draw_list_page(f, app),
         Page::Problem(view) => draw_problem_page(f, app, view),

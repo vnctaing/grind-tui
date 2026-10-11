@@ -7,13 +7,12 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
     Frame,
 };
 
 pub(super) fn draw_problem_page(f: &mut Frame, app: &App, view: &ProblemView) {
     let area = f.area();
-    f.render_widget(Block::default().style(Style::default().bg(t::BG)), area);
     let problem = &app.catalog.problems()[view.idx];
     let rows = Layout::vertical([
         Constraint::Length(1),
@@ -253,10 +252,9 @@ mod tests {
         }
     }
 
-    fn render(app: &App, width: u16, height: u16) -> Buffer {
-        let Page::Problem(view) = &app.page else { unreachable!() };
+    fn render(app: &mut App, width: u16, height: u16) -> Buffer {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal.draw(|f| draw_problem_page(f, app, view)).unwrap();
+        terminal.draw(|f| super::super::draw(f, app)).unwrap();
         terminal.backend().buffer().clone()
     }
 
@@ -285,8 +283,8 @@ mod tests {
 
     #[test]
     fn free_description_renders_markdown_without_raw_markup() {
-        let app = app_on("two-sum");
-        let screen = text(&render(&app, 140, 60));
+        let mut app = app_on("two-sum");
+        let screen = text(&render(&mut app, 140, 60));
         assert!(screen.contains("Example 1:"));
         for raw in ["&lt;", "&#39;", "**", "`"] {
             assert!(!screen.contains(raw), "raw {raw:?} leaked");
@@ -295,8 +293,8 @@ mod tests {
 
     #[test]
     fn premium_problem_shows_badge_link_and_examples_once() {
-        let app = app_on("meeting-rooms");
-        let screen = text(&render(&app, 140, 40));
+        let mut app = app_on("meeting-rooms");
+        let screen = text(&render(&mut app, 140, 40));
         assert!(screen.contains("PREMIUM"));
         assert!(screen.contains("https://leetcode.com/problems/meeting-rooms/"));
         assert_eq!(screen.matches("[[0,30],[5,10],[15,20]]").count(), 1);
@@ -305,13 +303,13 @@ mod tests {
     #[test]
     fn status_pill_flips_after_toggle_solved() {
         let mut app = app_on("two-sum");
-        let before = text(&render(&app, 140, 40));
+        let before = text(&render(&mut app, 140, 40));
         assert!(before.contains("TODO") && !before.contains("SOLVED"));
         app.toggle_solved();
-        let after = text(&render(&app, 140, 40));
+        let after = text(&render(&mut app, 140, 40));
         assert!(after.contains("SOLVED") && !after.contains("TODO"));
         app.toggle_solved();
-        let again = text(&render(&app, 140, 40));
+        let again = text(&render(&mut app, 140, 40));
         assert!(again.contains("TODO") && !again.contains("SOLVED"));
     }
 
@@ -320,7 +318,7 @@ mod tests {
         let mut app = app_on("two-sum");
         for focus in [Panel::Code, Panel::Description, Panel::Output] {
             view_mut(&mut app).focused = focus;
-            let buf = render(&app, 140, 40);
+            let buf = render(&mut app, 140, 40);
             for (panel, title) in [(Panel::Description, "Description"), (Panel::Code, "Code"), (Panel::Output, "Status")] {
                 let expected = if panel == focus { t::MAGENTA } else { t::BORDER };
                 assert_eq!(border_fg(&buf, title), expected, "{title} with {focus:?} focused");
@@ -328,11 +326,61 @@ mod tests {
         }
     }
 
+    fn find(buf: &Buffer, glyph: &str, from: (u16, u16), step: (u16, u16)) -> (u16, u16) {
+        let (mut x, mut y) = from;
+        while buf[(x, y)].symbol() != glyph {
+            x += step.0;
+            y += step.1;
+        }
+        (x, y)
+    }
+
+    fn description_rect(buf: &Buffer) -> (u16, u16, u16, u16) {
+        let (x0, y0) = find(buf, "╭", (0, 0), (0, 1));
+        let (x1, _) = find(buf, "╮", (x0 + 1, y0), (1, 0));
+        let (_, y1) = find(buf, "╰", (x0, y0 + 1), (0, 1));
+        (x0, y0, x1, y1)
+    }
+
+    #[test]
+    fn every_cell_has_the_theme_background() {
+        let mut app = app_on("invert-binary-tree");
+        let buf = render(&mut app, 140, 40);
+        for cell in buf.content() {
+            assert_ne!(cell.bg, Color::Reset, "terminal default bg shows through");
+        }
+        let (_, y0, x1, y1) = description_rect(&buf);
+        for y in y0..=y1 {
+            let gap = &buf[(x1 + 1, y)];
+            assert_eq!((gap.fg, gap.bg), (t::FG, t::BG), "gap cell at row {y}");
+        }
+    }
+
+    #[test]
+    fn unfocused_description_border_is_border_colored_on_every_edge() {
+        let mut app = app_on("invert-binary-tree");
+        let buf = render(&mut app, 140, 40);
+        let (x0, y0, x1, y1) = description_rect(&buf);
+        let edges = (y0 + 1..y1)
+            .flat_map(|y| [(x0, y), (x1, y)])
+            .chain((x0..=x1).map(|x| (x, y1)));
+        for (x, y) in edges {
+            assert_eq!(buf[(x, y)].fg, t::BORDER, "border cell ({x}, {y}) {:?}", buf[(x, y)].symbol());
+        }
+    }
+
+    #[test]
+    fn quit_is_visible_at_80_cols() {
+        let mut app = app_on("two-sum");
+        let bottom = rows(&render(&mut app, 80, 24)).pop().unwrap();
+        assert!(bottom.contains("q quit"), "{bottom:?}");
+    }
+
     #[test]
     fn help_bar_never_cuts_an_item() {
-        let app = app_on("two-sum");
+        let mut app = app_on("two-sum");
         for width in [20, 40, 60, 80, 100, 140] {
-            let buf = render(&app, width, 24);
+            let buf = render(&mut app, width, 24);
             let bottom = rows(&buf).pop().unwrap();
             let bottom = bottom.trim_end();
             let Page::Problem(view) = &app.page else { unreachable!() };
@@ -357,7 +405,7 @@ mod tests {
                     output: mask & 4 != 0,
                 };
                 for &(w, h) in &sizes {
-                    render(&app, w, h);
+                    render(&mut app, w, h);
                 }
             }
         }

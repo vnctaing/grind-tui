@@ -26,7 +26,6 @@ const DIFFICULTY_W: usize = 10;
 
 pub(super) fn draw_list_page(f: &mut Frame, app: &mut App) {
     let area = f.area();
-    f.render_widget(Block::default().style(Style::default().bg(t::BG)), area);
     let area = area.inner(Margin { horizontal: 1, vertical: 0 });
     let [header, _, tabs, search, table, help] = Layout::vertical([
         Constraint::Length(1),
@@ -293,7 +292,7 @@ mod tests {
 
     fn render(app: &mut App, w: u16, h: u16) -> Buffer {
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        term.draw(|f| draw_list_page(f, app)).unwrap();
+        term.draw(|f| super::super::draw(f, app)).unwrap();
         term.backend().buffer().clone()
     }
 
@@ -354,6 +353,19 @@ mod tests {
         let other = ListFilter::All.label();
         let ox = u16::try_from(tabs[..tabs.find(other).unwrap()].chars().count()).unwrap();
         assert_ne!(buf[(ox, 2)].bg, t::MAGENTA);
+    }
+
+    #[test]
+    fn margins_and_spacer_rows_have_the_theme_background() {
+        let mut app = app();
+        let buf = render(&mut app, 140, 40);
+        let gaps = (0..40)
+            .flat_map(|y| [(0, y), (139, y)])
+            .chain((0..140).map(|x| (x, 1)));
+        for (x, y) in gaps {
+            let cell = &buf[(x, y)];
+            assert_eq!((cell.fg, cell.bg), (t::FG, t::BG), "gap cell ({x}, {y})");
+        }
     }
 
     #[test]
