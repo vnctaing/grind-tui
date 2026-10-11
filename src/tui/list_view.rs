@@ -50,7 +50,11 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     let mut left = vec![Span::styled("░▒▓ ", flank)];
     left.extend(theme::gradient(theme::BRAND, t::MAGENTA, t::CYAN));
     left.push(Span::styled(" ▓▒░", flank));
-    let right = theme::progress_bar(app.solved_count(), app.catalog.problems().len(), 16);
+    let (done, total) = (app.solved_count(), app.catalog.problems().len());
+    let count_w = format!(" {done}/{total}").len();
+    let room = usize::from(area.width).saturating_sub(spans_width(&left) + 1 + count_w);
+    let bar_w = u16::try_from(room.min(16)).unwrap_or(16);
+    let right = theme::progress_bar(done, total, bar_w);
     let line = justify(left, right, usize::from(area.width));
     f.render_widget(Paragraph::new(line), area);
 }
@@ -221,14 +225,14 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
 
     let visible = usize::from(list_area.height);
     let total = app.filtered.len();
-    if total > visible {
+    if total > visible && bar_area.width > 0 && bar_area.height > 0 {
         let mut state = ScrollbarState::new(total)
             .position(app.list_state.offset())
             .viewport_content_length(visible);
         let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(None)
             .end_symbol(None)
-            .track_symbol(Some("│"))
+            .track_symbol(Some("┆"))
             .track_style(Style::default().fg(t::BORDER))
             .thumb_symbol("█")
             .thumb_style(Style::default().fg(t::MAGENTA));
@@ -274,4 +278,89 @@ fn fit(s: &str, width: usize, right: bool) -> String {
     };
     let pad = " ".repeat(width.saturating_sub(text.chars().count()));
     if right { pad + &text } else { text + &pad }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::catalog::Catalog;
+    use crate::state::AppState;
+    use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
+
+    fn app() -> App {
+        App::new(Catalog::embedded(), AppState::default(), vec![], ListFilter::All, None)
+    }
+
+    fn render(app: &mut App, w: u16, h: u16) -> Buffer {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| draw_list_page(f, app)).unwrap();
+        term.backend().buffer().clone()
+    }
+
+    fn line(buf: &Buffer, y: u16) -> String {
+        (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+    }
+
+    fn lines(buf: &Buffer) -> Vec<String> {
+        (0..buf.area.height).map(|y| line(buf, y)).collect()
+    }
+
+    #[test]
+    fn renders_without_panic_at_any_small_size() {
+        let mut sizes: Vec<(u16, u16)> = (0..=12).flat_map(|w| (0..=14).map(move |h| (w, h))).collect();
+        sizes.extend([(80, 24), (140, 40)]);
+        for (w, h) in sizes {
+            render(&mut app(), w, h);
+            let mut searched = app();
+            searched.query = "tree".into();
+            searched.refilter();
+            render(&mut searched, w, h);
+        }
+    }
+
+    #[test]
+    fn selected_row_shows_its_id() {
+        let mut app = app();
+        app.list_state.select(Some(2));
+        let id = app.catalog.problems()[app.selected().unwrap()].id.0.to_string();
+        let buf = render(&mut app, 80, 24);
+        let row = lines(&buf).into_iter().find(|l| l.contains('▌')).expect("selected marker drawn");
+        let after_marker = row.split('▌').nth(1).unwrap().trim_start();
+        assert!(after_marker.starts_with(&id), "row {row:?} lacks id {id}");
+    }
+
+    #[test]
+    fn long_title_is_not_truncated_at_140_cols() {
+        let mut app = app();
+        app.query = "lowest common ancestor of a binary search".into();
+        app.refilter();
+        let buf = render(&mut app, 140, 40);
+        assert!(lines(&buf).iter().any(|l| l.contains("Lowest Common Ancestor of a Binary Search Tree")));
+    }
+
+    #[test]
+    fn active_filter_tab_is_a_magenta_pill() {
+        let mut app = app();
+        app.filter = ListFilter::Only(ListId::Grind75);
+        app.refilter();
+        let label = app.filter.label();
+        let buf = render(&mut app, 80, 24);
+        let tabs = line(&buf, 2);
+        let x = tabs.find(label).expect("active tab label drawn");
+        let x = u16::try_from(tabs[..x].chars().count()).unwrap();
+        let cell = &buf[(x, 2)];
+        assert_eq!(cell.bg, t::MAGENTA);
+        assert_eq!(cell.fg, t::BG);
+        let other = ListFilter::All.label();
+        let ox = u16::try_from(tabs[..tabs.find(other).unwrap()].chars().count()).unwrap();
+        assert_ne!(buf[(ox, 2)].bg, t::MAGENTA);
+    }
+
+    #[test]
+    fn header_count_is_visible_at_narrow_width() {
+        let mut app = app();
+        let total = app.catalog.problems().len();
+        let buf = render(&mut app, 36, 24);
+        assert!(line(&buf, 0).contains(&format!("0/{total}")), "{:?}", line(&buf, 0));
+    }
 }
