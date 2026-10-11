@@ -140,7 +140,7 @@ fn draw_code_section(f: &mut Frame, area: Rect, app: &App, _focused: bool) {
 
     let highlighted: Vec<Line<'static>> = highlight_code(
         app.selected_problem().map(|p| p.code.as_str()).unwrap_or(""),
-        &app.language,
+        crate::catalog::Lang::ALL.into_iter().find(|l| l.slug() == app.language).unwrap_or_default(),
     ).into_iter().enumerate().map(|(i, mut l)| {
         l.spans.insert(0, Span::styled(format!("{:>3} ", i + 1), Style::default().fg(Color::DarkGray)));
         l
