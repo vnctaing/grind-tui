@@ -1,0 +1,31 @@
+# Diagnostics: a broken Python file shows the gutter dot, underline, status rows; F8 jumps; fixing clears it.
+size 140x40
+write .grind-tui/two-sum.py
+class Solution:
+    def twoSum(self, nums: list[int], target: int) -> list[int]:
+        return [0, 1
+
+EOF
+launch
+key Enter
+wait-for class Solution
+expect ●
+expect ● 1 error
+expect F8 next
+expect Ln 3: Unclosed '['
+expect F8 next error
+expect-ansi \x1b\[[0-9;:]*\b4[;:m]
+snap broken
+key F8
+key Enter
+expect Ln 3, Col 16
+snap f8-caret
+key End
+text ]
+expect ✓ no syntax errors
+reject ● 1 error
+snap fixed
+key Esc
+expect-file .grind-tui/two-sum.py ~ return [0, 1]
+key q
+expect-exit 0
