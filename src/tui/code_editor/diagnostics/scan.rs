@@ -1,13 +1,17 @@
 use super::{Diagnostic, Source};
 use crate::catalog::Lang;
+use std::ops::Range;
 
-/// `blank` is the text with comment bytes replaced by spaces and string
-/// bytes by `x`, keeping newlines, so lints can read code by byte without
-/// lexing again. A string still reads as a token. Offsets match the text.
+/// `blank` is the text with comment and preprocessor bytes replaced by
+/// spaces, keeping their newlines, and string bytes, newlines included, by
+/// `x`, so lints can read code by byte without lexing again. A string still
+/// reads as one token on one line. Offsets match the text. `disabled` holds
+/// the C and C++ regions under `#if 0`, which the compiler never reads.
 pub struct Scan {
     pub blank: Vec<u8>,
     pub diagnostics: Vec<Diagnostic>,
     pub unclosed: Vec<Unclosed>,
+    pub disabled: Vec<Range<usize>>,
 }
 
 /// An opening bracket with no closer before the end of the text.
@@ -52,6 +56,7 @@ pub fn scan(text: &str, lang: Lang) -> Scan {
         stack: Vec::new(),
         diagnostics: Vec::new(),
         unclosed: Vec::new(),
+        disabled: Vec::new(),
         swallowed: false,
         regex_allowed: true,
     };
@@ -63,7 +68,7 @@ pub fn scan(text: &str, lang: Lang) -> Scan {
             Frame::Interp { template, .. } => s.diagnostics.push(unterminated(template, s.bytes, "template string")),
         }
     }
-    Scan { blank: s.blank, diagnostics: s.diagnostics, unclosed: s.unclosed }
+    Scan { blank: s.blank, diagnostics: s.diagnostics, unclosed: s.unclosed, disabled: s.disabled }
 }
 
 struct Scanner<'a> {
@@ -73,6 +78,7 @@ struct Scanner<'a> {
     stack: Vec<Frame>,
     diagnostics: Vec<Diagnostic>,
     unclosed: Vec<Unclosed>,
+    disabled: Vec<Range<usize>>,
     /// A literal or comment ran to the end of the text, so the brackets still
     /// open were most likely swallowed by it rather than left open.
     swallowed: bool,
@@ -89,7 +95,10 @@ impl Scanner<'_> {
             let rest = &b[i..];
             let was_regex_allowed = self.regex_allowed;
             self.regex_allowed = false;
-            if rest.starts_with(line_comment) {
+            if c == b'#' && matches!(self.lang, Lang::C | Lang::Cpp) && self.at_line_start(i) {
+                i = self.erase_directive(i);
+                self.regex_allowed = was_regex_allowed;
+            } else if rest.starts_with(line_comment) {
                 let end = line_end(b, i);
                 self.erase_comment(i, end);
                 i = end;
@@ -120,7 +129,12 @@ impl Scanner<'_> {
                     let Some(Frame::Interp { template, .. }) = self.stack.pop() else { unreachable!() };
                     i = self.template(template, i + 1);
                 } else {
-                    self.close(c, i);
+                    let opener = self.close(c, i);
+                    self.regex_allowed = match c {
+                        b'}' => true,
+                        b')' => opener.is_some_and(|at| self.opens_statement_header(at)),
+                        _ => false,
+                    };
                     i += 1;
                 }
             } else {
@@ -150,9 +164,7 @@ impl Scanner<'_> {
             Lang::Go if rest[0] == b'`' => Some((1, Literal::Raw { close: b"`".to_vec() })),
             _ => match rest[0] {
                 b'"' => escaped(b"\"", false),
-                b'\'' if self.lang != Lang::Rust && !(self.lang == Lang::Cpp && digit_separator(self.bytes, i)) => {
-                    escaped(b"'", false)
-                }
+                b'\'' if self.lang != Lang::Rust => escaped(b"'", false),
                 _ => None,
             },
         }
@@ -160,6 +172,45 @@ impl Scanner<'_> {
 
     fn at_word_start(&self, i: usize) -> bool {
         i == 0 || !is_ident_byte(self.bytes[i - 1])
+    }
+
+    fn at_line_start(&self, i: usize) -> bool {
+        self.bytes[..i].iter().rev().take_while(|&&c| c != b'\n').all(|c| matches!(c, b' ' | b'\t'))
+    }
+
+    fn opens_statement_header(&self, open: usize) -> bool {
+        let end = self.blank[..open].iter().rposition(|c| !c.is_ascii_whitespace()).map_or(0, |p| p + 1);
+        let start = self.blank[..end].iter().rposition(|&c| !is_ident_byte(c)).map_or(0, |p| p + 1);
+        matches!(&self.blank[start..end], b"if" | b"while" | b"for" | b"with")
+    }
+
+    fn erase_directive(&mut self, start: usize) -> usize {
+        let end = directive_end(self.bytes, start);
+        self.erase_comment(start, end);
+        if !matches!(directive_words(&self.bytes[start..end]), (b"if", b"0")) {
+            return end;
+        }
+        let mut depth = 0usize;
+        let mut line = end;
+        while line < self.bytes.len() {
+            let next = directive_end(self.bytes, line + 1);
+            let text = &self.bytes[line + 1..next];
+            let name = if text.trim_ascii_start().starts_with(b"#") { directive_words(text).0 } else { b"" };
+            match name {
+                b"if" | b"ifdef" | b"ifndef" => depth += 1,
+                b"endif" if depth > 0 => depth -= 1,
+                b"else" | b"elif" | b"endif" if depth == 0 => {
+                    self.erase_comment(end, line + 1);
+                    self.disabled.push(start..line + 1);
+                    return line + 1;
+                }
+                _ => {}
+            }
+            line = next;
+        }
+        self.erase_comment(end, self.bytes.len());
+        self.disabled.push(start..self.bytes.len());
+        self.bytes.len()
     }
 
     /// Returns where code resumes.
@@ -296,7 +347,7 @@ impl Scanner<'_> {
         b.len()
     }
 
-    fn close(&mut self, c: u8, at: usize) {
+    fn close(&mut self, c: u8, at: usize) -> Option<usize> {
         let open = opener_of(c);
         let reachable = self
             .stack
@@ -311,27 +362,25 @@ impl Scanner<'_> {
                         self.unclosed.push(Unclosed { at, open });
                     }
                 }
-                self.stack.pop();
+                let Some(Frame::Bracket { at, .. }) = self.stack.pop() else { unreachable!() };
+                Some(at)
             }
             None => {
                 let message = format!("Unexpected '{}'", c as char);
                 self.diagnostics.push(Diagnostic::error(at..at + 1, Source::Brackets, message));
+                None
             }
         }
     }
 
     fn erase(&mut self, from: usize, to: usize) {
-        self.fill(from, to, b'x');
+        self.blank[from..to].fill(b'x');
     }
 
     fn erase_comment(&mut self, from: usize, to: usize) {
-        self.fill(from, to, b' ');
-    }
-
-    fn fill(&mut self, from: usize, to: usize, with: u8) {
         for byte in &mut self.blank[from..to] {
             if *byte != b'\n' {
-                *byte = with;
+                *byte = b' ';
             }
         }
     }
@@ -378,14 +427,6 @@ fn cpp_raw(rest: &[u8]) -> Option<(usize, Literal)> {
     Some((prefix + delim_len + 1, Literal::Raw { close }))
 }
 
-/// C++14 `1'000'000`: a quote right after a digit inside a number.
-fn digit_separator(b: &[u8], i: usize) -> bool {
-    i > 0 && b[i - 1].is_ascii_alphanumeric() && {
-        let start = b[..i].iter().rposition(|&c| !is_ident_byte(c) && c != b'\'').map_or(0, |p| p + 1);
-        b[start].is_ascii_digit()
-    }
-}
-
 fn number_end(b: &[u8], i: usize, lang: Lang) -> usize {
     let mut j = i;
     while j < b.len() && (is_ident_byte(b[j]) || b[j] == b'.' || (lang == Lang::Cpp && b[j] == b'\'' && b.get(j + 1).is_some_and(u8::is_ascii_alphanumeric))) {
@@ -398,7 +439,7 @@ fn ident_end(b: &[u8], i: usize) -> usize {
     b[i..].iter().position(|&c| !is_ident_byte(c)).map_or(b.len(), |p| i + p)
 }
 
-fn is_ident_byte(c: u8) -> bool {
+pub(super) fn is_ident_byte(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'_' || c >= 0x80
 }
 
@@ -409,6 +450,23 @@ fn utf8_len(first: u8) -> usize {
         0xe0..=0xef => 3,
         _ => 4,
     }
+}
+
+fn directive_end(b: &[u8], mut i: usize) -> usize {
+    loop {
+        let end = line_end(b, i.min(b.len()));
+        if end == b.len() || !b[..end].trim_ascii_end().ends_with(b"\\") {
+            return end;
+        }
+        i = end + 1;
+    }
+}
+
+fn directive_words(line: &[u8]) -> (&[u8], &[u8]) {
+    let rest = line.trim_ascii_start().strip_prefix(b"#").unwrap_or_default().trim_ascii_start();
+    let name = &rest[..ident_end(rest, 0)];
+    let arg = rest[name.len()..].trim_ascii_start();
+    (name, &arg[..ident_end(arg, 0)])
 }
 
 fn line_end(b: &[u8], i: usize) -> usize {

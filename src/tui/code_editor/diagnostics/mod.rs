@@ -5,7 +5,7 @@ use crate::catalog::Lang;
 use std::ops::Range;
 use tree_sitter::{Node, Parser};
 
-const MAX_DIAGNOSTICS: usize = 50;
+pub const MAX_DIAGNOSTICS: usize = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
@@ -64,6 +64,7 @@ impl Checker {
             found.extend(lint::lint(text, &scanned.blank, tree.root_node(), self.lang));
             collect(tree.root_node(), text, &scanned.blank, self.lang, &mut parse_errors);
         }
+        parse_errors.retain(|p| !scanned.disabled.iter().any(|d| d.contains(&p.span.start)));
         let mut all = merge(found, scanned.unclosed, parse_errors);
         all.sort_by(|a, b| (a.range.start, a.severity).cmp(&(b.range.start, b.severity)));
         all.dedup_by(|a, b| a.range.start == b.range.start && a.message == b.message);
@@ -179,7 +180,7 @@ fn missing_semicolon(blank: &[u8], start: usize) -> Option<usize> {
     let opens_line = blank[line_start..start].iter().all(u8::is_ascii_whitespace);
     let starts_statement = blank.get(start).is_some_and(|&c| c.is_ascii_alphabetic() || c == b'_');
     let prev = blank[..start].iter().rposition(|c| !c.is_ascii_whitespace())?;
-    let ends_expression = blank[prev].is_ascii_alphanumeric() || matches!(blank[prev], b'_' | b')' | b']' | b'x');
+    let ends_expression = blank[prev].is_ascii_alphanumeric() || matches!(blank[prev], b'_' | b')' | b']');
     (opens_line && starts_statement && ends_expression).then_some(prev + 1)
 }
 

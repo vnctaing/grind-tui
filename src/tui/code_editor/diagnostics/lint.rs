@@ -1,3 +1,4 @@
+use super::scan::is_ident_byte;
 use super::{Diagnostic, Source};
 use crate::catalog::Lang;
 use std::ops::Range;
@@ -95,32 +96,40 @@ fn python_line(text: &[u8], blank: &[u8], line: Range<usize>, out: &mut Vec<Diag
     }
 }
 
-/// `if`/`while` conditions with a bare `=`, which Rust rejects as a type error.
+/// `if`/`while` conditions and match guards with a bare `=`, which Rust
+/// rejects as a type error.
 fn rust_conditions(blank: &[u8], out: &mut Vec<Diagnostic>) {
     for kw in [&b"if"[..], b"while"] {
         for at in words(blank, kw) {
             let start = at + kw.len();
-            let Some(body) = depth_zero(blank, start).find(|&i| matches!(blank[i], b'{' | b';')) else { continue };
-            if blank[body] != b'{' || words(&blank[start..body], b"let").next().is_some() {
+            let Some(end) = depth_zero(blank, start).find(|&i| matches!(blank[i], b'{' | b';') || blank[i..].starts_with(b"=>"))
+            else {
+                continue;
+            };
+            if blank[end] == b';' || words(&blank[start..end], b"let").next().is_some() {
                 continue;
             }
-            if let Some(i) = depth_zero(blank, start).take_while(|&i| i < body).find(|&i| is_assignment(blank, i, b"=!<>+-*/%&|^")) {
+            if let Some(i) = depth_zero(blank, start).take_while(|&i| i < end).find(|&i| is_assignment(blank, i, b"=!<>+-*/%&|^")) {
                 out.push(Diagnostic::error(i..i + 1, Source::Lint, ASSIGN_IN_CONDITION));
             }
         }
     }
 }
 
-/// `if (cond);` runs nothing when `cond` holds.
 fn empty_if(blank: &[u8], out: &mut Vec<Diagnostic>) {
     for at in words(blank, b"if") {
         let open = skip_space(blank, at + 2);
         if blank.get(open) != Some(&b'(') {
             continue;
         }
-        let Some(close) = closing_paren(blank, open) else { continue };
+        let line_end = blank[open..].iter().position(|&c| c == b'\n').map_or(blank.len(), |p| open + p);
+        let Some(close) = closing_paren(&blank[..line_end], open) else { continue };
         let semi = skip_space(blank, close + 1);
-        if blank.get(semi) == Some(&b';') {
+        if blank.get(semi) != Some(&b';') {
+            continue;
+        }
+        let next = semi + 1 + blank[semi + 1..].iter().take_while(|c| c.is_ascii_whitespace()).count();
+        if words(&blank[next..], b"else").next() != Some(0) {
             out.push(Diagnostic::warning(semi..semi + 1, Source::Lint, "Empty statement after 'if'"));
         }
     }
@@ -201,8 +210,4 @@ fn leading_word(code: &[u8]) -> &[u8] {
 
 fn skip_space(code: &[u8], from: usize) -> usize {
     from + code[from.min(code.len())..].iter().take_while(|c| matches!(c, b' ' | b'\t')).count()
-}
-
-fn is_ident_byte(c: u8) -> bool {
-    c.is_ascii_alphanumeric() || c == b'_' || c >= 0x80
 }

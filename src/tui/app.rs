@@ -43,6 +43,7 @@ pub struct Scroll { pub desc: u16, pub output: u16 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodeMode { Navigate, Edit }
 
+pub const UNSAVED: &str = "Unsaved edits. Enter then Ctrl-S saves them, y twice reloads from disk and discards them.";
 const CONFLICT: &str = "File changed on disk while you have unsaved edits.\nCtrl-S overwrites it, Ctrl-R twice reloads it (discards your edits).";
 
 /// A key that discards unsaved edits, pressed once. The same key again
@@ -391,11 +392,11 @@ pub fn list_keys(app: &App) -> Vec<(&'static str, &'static str)> {
 }
 
 pub fn problem_keys(app: &App, view: &ProblemView) -> Vec<(&'static str, &'static str)> {
+    let has_diagnostics = !view.editor.diagnostics().is_empty();
     if view.mode == CodeMode::Edit {
-        return vec![
+        let mut keys = vec![
             ("Esc", "done"),
             ("^S", "save"),
-            ("F8", "next error"),
             ("^Z", "undo"),
             ("^Y", "redo"),
             ("^C/^X/^V", "copy/cut/paste"),
@@ -403,6 +404,10 @@ pub fn problem_keys(app: &App, view: &ProblemView) -> Vec<(&'static str, &'stati
             ("^R", "reload"),
             ("^Q^Q", "discard"),
         ];
+        if has_diagnostics {
+            keys.insert(2, ("F8", "next error"));
+        }
+        return keys;
     }
     let mut keys = vec![
         ("b", "back"),
@@ -417,7 +422,7 @@ pub fn problem_keys(app: &App, view: &ProblemView) -> Vec<(&'static str, &'stati
         ("y", "sync"),
         ("Y", "yank"),
     ];
-    if !view.editor.diagnostics().is_empty() {
+    if has_diagnostics {
         keys.insert(3, ("F8", "next error"));
     }
     keys
@@ -503,7 +508,7 @@ fn handle_problem_key(app: &mut App, key: KeyCode) -> Action {
     let Page::Problem(view) = &mut app.page else { return Action::None };
     let armed = view.armed.take();
     if would_drop_edits && view.editor.is_dirty() {
-        view.message = "Unsaved edits. Enter then Ctrl-S saves them, y twice reloads from disk and discards them.".to_string();
+        view.message = UNSAVED.to_string();
         return Action::None;
     }
     if key == KeyCode::Char('y') {
@@ -1016,8 +1021,11 @@ mod tests {
         assert!(edit.contains(&("^S", "save")));
         assert!(edit.contains(&("^Q^Q", "discard")));
         assert!(!edit.iter().any(|(k, _)| *k == "q"));
-        assert!(edit.contains(&("F8", "next error")));
+        assert!(!edit.iter().any(|(k, _)| *k == "F8"), "a clean buffer hides F8 while editing");
         assert!(!nav.iter().any(|(k, _)| *k == "F8"), "a clean buffer hides F8");
+        key(&mut app, KeyCode::Char(':'), KeyModifiers::NONE);
+        let Page::Problem(v) = &app.page else { unreachable!() };
+        assert_eq!(problem_keys(&app, v)[2], ("F8", "next error"));
     }
 
     #[test]

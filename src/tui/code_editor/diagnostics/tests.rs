@@ -48,6 +48,7 @@ fn broken_snippets_point_at_the_mistake_in_every_language() {
         (Lang::C, "int f(int x) {\n  return (x + 1;\n}\n", &[(2, 16, "Missing ')'")]),
         (Lang::C, "int f(int x) {\n  int y = x\n  return y;\n}\n", &[(2, 12, "Missing ';'")]),
         (Lang::C, "int f(int x) {\n  /* note\n  return x;\n}\n", &[(2, 3, "Unterminated comment")]),
+        (Lang::Rust, "fn f(x: i32) {\n    match x {\n        n if n = 1 => {}\n        _ => {}\n    }\n}\n", &[(3, 16, assign)]),
     ];
     for (lang, src, want) in cases {
         expect(*lang, src, want);
@@ -67,6 +68,13 @@ fn tricky_but_valid_code_has_no_diagnostics() {
         (Lang::Cpp, "#include <vector>\nint f() {\n  int n = 1'000'000;\n  const char* s = R\"x(\")x\";\n  char c = '{';\n  return n + s[0] + c;\n}\n"),
         (Lang::Go, "func f(s string) rune {\n  r := `(\n{`\n  c := '}'\n  return c + rune(len(r))\n}\n"),
         (Lang::C, "int f(char *s) {\n  if (s[0] == '(') {\n    return 1; // }\n  }\n  return 0;\n}\n"),
+        (Lang::Rust, "fn f(v: Option<i32>) -> i32 {\n    let mut best = 0;\n    match v { Some(n) if n > best => best = n, _ => {} }\n    best\n}\n"),
+        (Lang::Javascript, "function f(ok, s) {\n  if (ok) /[(]/.test(s) && go();\n  while (ok) /[{]/.test(s);\n}\n"),
+        (Lang::Javascript, "function f(x, y) {\n  if (x) {}\n  /[(]/.test(y);\n  return (x) / (y) / 2;\n}\n"),
+        (Lang::Javascript, "function f(x) {\n  if (x) ; else g();\n}\n"),
+        (Lang::Python3, "def f(s):\n    for line in \"\"\"a\nb\"\"\".split():\n        pass\n    if s == '''x\n(''':\n        pass\n"),
+        (Lang::C, "#error don't build this\n#define OPEN {\n#if 0\nthis is ( not code '\n#if 1\n\"\n#endif\n#else\nint g(void) { return 1; }\n#endif\nint f(int x) {\n  if (x) ; else return 2;\n  return x;\n}\n"),
+        (Lang::Cpp, "#include <vector>\n#if 0\nauto x = foo(;\n#elif 1\nint y;\n#endif\nint f() { return 0; }\n"),
     ];
     for (lang, src) in cases {
         expect(*lang, src, &[]);
@@ -116,7 +124,6 @@ fn a_missing_closer_replaces_the_unclosed_report_and_cascades_are_dropped() {
     assert_eq!(d[0].source, Source::Lint);
 }
 
-/// xorshift64, so failures replay from the printed seed.
 struct Rng(u64);
 
 impl Rng {
@@ -157,7 +164,12 @@ fn random_edits_never_panic_and_ranges_stay_on_char_boundaries() {
             if text.len() > 4000 {
                 text.truncate(boundaries.iter().rev().find(|&&b| b <= 2000).copied().unwrap_or(0));
             }
-            for d in checker.check(&text) {
+            let found = checker.check(&text);
+            assert!(
+                found.windows(2).all(|w| (w[0].range.start, &w[0].message) != (w[1].range.start, &w[1].message)),
+                "{lang:?} seed {seed} step {step}: duplicate in {found:?}"
+            );
+            for d in found {
                 let r = &d.range;
                 assert!(
                     r.start <= r.end && r.end <= text.len() && text.is_char_boundary(r.start) && text.is_char_boundary(r.end),
@@ -166,4 +178,26 @@ fn random_edits_never_panic_and_ranges_stay_on_char_boundaries() {
             }
         }
     }
+}
+
+#[test]
+fn findings_past_the_cap_are_dropped_in_position_order() {
+    let line = "x = 'a\n";
+    let src = line.repeat(60);
+    let d = Checker::new(Lang::Python3).check(&src);
+    assert_eq!(d.len(), MAX_DIAGNOSTICS);
+    assert!(d.iter().all(|d| d.message == "Unterminated string"), "{d:?}");
+    assert_eq!(d.last().unwrap().range.start, line.len() * (MAX_DIAGNOSTICS - 1) + 4);
+}
+
+#[test]
+fn a_finding_reported_twice_at_one_spot_shows_once() {
+    let src = "n{n:(\nruisites: V>e'c<Vec<i3>2\n>>({\"\"}\n}";
+    let want = [
+        (2, 9, "Unexpected token ':'"),
+        (2, 13, "Unexpected token 'e'"),
+        (3, 8, "Missing ')'"),
+        (4, 2, "Missing ';'"),
+    ];
+    expect(Lang::Rust, src, &want);
 }

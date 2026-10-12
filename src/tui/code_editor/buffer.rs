@@ -36,7 +36,7 @@ impl LineEnding {
 /// Every offset is a byte offset into `text` that lies on a char boundary.
 /// `text` always uses `\n`; `ending` is the file's dominant line ending, which
 /// `contents` writes back. `mixed` records that the file used both.
-/// `version` changes on every edit.
+/// `version` grows on every edit and reload.
 pub struct Buffer {
     text: String,
     line_starts: Vec<usize>,
@@ -53,6 +53,12 @@ impl Buffer {
         let text = text.replace("\r\n", "\n");
         let line_starts = line_starts(&text);
         Buffer { text, line_starts, ending, mixed: crlf > 0 && lf > 0, version: 0 }
+    }
+
+    pub fn reload(&mut self, text: &str) {
+        let version = self.version + 1;
+        *self = Buffer::new(text);
+        self.version = version;
     }
 
     pub fn text(&self) -> &str {

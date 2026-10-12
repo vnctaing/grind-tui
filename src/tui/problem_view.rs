@@ -1,5 +1,5 @@
 use super::app::{problem_keys, App, CodeMode, Panel, ProblemView};
-use super::code_editor::{Diagnostic, Severity};
+use super::code_editor::diagnostic_summary;
 use super::markdown::render_markdown;
 use super::theme::{self, help_line, panel, t};
 use crate::catalog::{Body, Problem};
@@ -195,12 +195,15 @@ fn draw_code(f: &mut Frame, area: Rect, view: &ProblemView) {
 }
 
 fn draw_status(f: &mut Frame, area: Rect, app: &App, view: &ProblemView, problem: &Problem) {
-    let mut lines = vec![Line::from(status_pill(app.is_solved(view.idx))), syntax_summary(view.editor.diagnostics())];
+    let mut lines = vec![Line::from(status_pill(app.is_solved(view.idx)))];
     lines.extend(
         view.message
             .lines()
             .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(t::FG)))),
     );
+    if view.collapsed.code {
+        lines.push(syntax_row_for_hidden_code(view));
+    }
     if !matches!(problem.body, Body::Premium) {
         lines.push(Line::default());
         lines.extend(examples_block(&problem.examples));
@@ -214,21 +217,16 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App, view: &ProblemView, problem
     );
 }
 
-fn syntax_summary(diagnostics: &[Diagnostic]) -> Line<'static> {
-    let count = |severity| diagnostics.iter().filter(|d| d.severity == severity).count();
-    let (errors, warnings) = (count(Severity::Error), count(Severity::Warning));
-    let label = Span::styled("Syntax  ", Style::default().fg(t::MUTED));
-    if errors + warnings == 0 {
-        return Line::from(vec![label, Span::styled("✓ no errors", Style::default().fg(t::MINT))]);
+fn syntax_row_for_hidden_code(view: &ProblemView) -> Line<'static> {
+    let mut spans = vec![Span::styled("Syntax  ", Style::default().fg(t::MUTED))];
+    let summary = diagnostic_summary(view.editor.diagnostics());
+    if summary.is_empty() {
+        spans.push(Span::styled("✓ no errors", Style::default().fg(t::MINT)));
+    } else {
+        spans.extend(summary);
+        spans.push(Span::styled("  F8 next", Style::default().fg(t::MUTED)));
     }
-    let plural = |n: usize| if n == 1 { "" } else { "s" };
-    Line::from(vec![
-        label,
-        Span::styled(format!("● {errors} error{}", plural(errors)), Style::default().fg(t::MAGENTA)),
-        Span::styled(" · ", Style::default().fg(t::MUTED)),
-        Span::styled(format!("▲ {warnings} warning{}", plural(warnings)), Style::default().fg(t::YELLOW)),
-        Span::styled("  F8 next", Style::default().fg(t::MUTED)),
-    ])
+    Line::from(spans)
 }
 
 fn status_pill(solved: bool) -> Span<'static> {
@@ -244,7 +242,7 @@ mod tests {
     use super::*;
     use crate::catalog::Catalog;
     use crate::state::AppState;
-    use crate::tui::app::{Collapsed, ListFilter, Page};
+    use crate::tui::app::{Collapsed, ListFilter, Page, UNSAVED};
     use ratatui::{backend::TestBackend, buffer::Buffer, style::Color, Terminal};
 
     fn app_on(slug: &str) -> App {
@@ -396,13 +394,37 @@ mod tests {
     }
 
     #[test]
-    fn status_panel_counts_syntax_errors() {
+    fn status_panel_counts_syntax_errors_only_while_the_code_is_hidden() {
         let mut app = app_on("two-sum");
-        assert!(text(&render(&mut app, 140, 40)).contains("Syntax  ✓ no errors"));
         let lang = app.progress.language;
         view_mut(&mut app).editor = crate::tui::code_editor::CodeEditor::new("def f(x)\n    return [x\n", lang);
+        let shown = text(&render(&mut app, 140, 40));
+        assert!(shown.contains("● 2 errors · Ln 1"), "{shown}");
+        assert!(!shown.contains("Syntax"), "{shown}");
+        view_mut(&mut app).collapsed.code = true;
         let screen = text(&render(&mut app, 140, 40));
-        assert!(screen.contains("Syntax  ● 2 errors · ▲ 0 warnings  F8 next"), "{screen}");
+        assert!(screen.contains("Syntax  ● 2 errors  F8 next"), "{screen}");
+        assert!(!screen.contains("warning"), "{screen}");
+        view_mut(&mut app).editor = crate::tui::code_editor::CodeEditor::new("x = 1\n", lang);
+        assert!(text(&render(&mut app, 140, 40)).contains("Syntax  ✓ no errors"));
+    }
+
+    #[test]
+    fn the_unsaved_edits_warning_fits_the_status_panel_at_60x20() {
+        let mut app = app_on("two-sum");
+        let lang = app.progress.language;
+        view_mut(&mut app).editor = crate::tui::code_editor::CodeEditor::new("def f(x)\n    return [x\n", lang);
+        view_mut(&mut app).message = UNSAVED.to_string();
+        let buf = render(&mut app, 60, 20);
+        let top = rows(&buf).iter().position(|r| r.contains("╭ Status ")).unwrap();
+        let left = rows(&buf)[top].chars().position(|c| c == '╭').unwrap();
+        let panel: Vec<String> = rows(&buf)[top + 1..]
+            .iter()
+            .take_while(|r| !r.chars().nth(left).is_some_and(|c| c == '╰'))
+            .map(|r| r.chars().skip(left + 1).collect::<String>().trim_end_matches(['│', ' ']).to_string())
+            .collect();
+        let shown = panel.join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(shown.contains(UNSAVED), "{panel:#?}");
     }
 
     #[test]

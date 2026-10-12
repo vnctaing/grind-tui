@@ -1,4 +1,5 @@
 use super::buffer::{char_cells, Buffer};
+use super::diagnostics::MAX_DIAGNOSTICS;
 use super::{CodeEditor, Diagnostic, Severity, Viewport};
 use crate::tui::highlight::highlight_code;
 use crate::tui::theme::{self, t};
@@ -106,21 +107,31 @@ fn status_line(ed: &CodeEditor) -> Line<'static> {
     let Some(focus) = ed.diagnostic_at_caret() else {
         return Line::from(Span::styled("✓ no syntax errors", Style::default().fg(t::MUTED)));
     };
-    let count = |severity| ed.diagnostics.iter().filter(|d| d.severity == severity).count();
+    let mut spans = diagnostic_summary(&ed.diagnostics);
+    let line = ed.buffer.pos(focus.range.start).line + 1;
+    spans.push(Span::styled(format!(" · Ln {line}: {}", focus.message), Style::default().fg(t::FG)));
+    Line::from(spans)
+}
+
+/// "● 2 errors · ▲ 1 warning", leaving out a severity with none. A count
+/// at the cap may be missing findings, so it reads "50+".
+pub fn diagnostic_summary(diagnostics: &[Diagnostic]) -> Vec<Span<'static>> {
+    let capped = if diagnostics.len() >= MAX_DIAGNOSTICS { "+" } else { "" };
     let mut spans = Vec::new();
     for (severity, noun, glyph, color) in [
         (Severity::Error, "error", "●", t::MAGENTA),
         (Severity::Warning, "warning", "▲", t::YELLOW),
     ] {
-        let n = count(severity);
+        let n = diagnostics.iter().filter(|d| d.severity == severity).count();
         if n > 0 {
+            if !spans.is_empty() {
+                spans.push(Span::styled(" · ", Style::default().fg(t::MUTED)));
+            }
             let plural = if n == 1 { "" } else { "s" };
-            spans.push(Span::styled(format!("{glyph} {n} {noun}{plural} · "), Style::default().fg(color)));
+            spans.push(Span::styled(format!("{glyph} {n}{capped} {noun}{plural}"), Style::default().fg(color)));
         }
     }
-    let line = ed.buffer.pos(focus.range.start).line + 1;
-    spans.push(Span::styled(format!("Ln {line}: {}", focus.message), Style::default().fg(t::FG)));
-    Line::from(spans)
+    spans
 }
 
 /// One buffer line as spans: syntax color per char, then diagnostics, then

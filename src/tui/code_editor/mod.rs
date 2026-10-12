@@ -10,6 +10,7 @@ use buffer::{display_col, Buffer, EditRecord, TAB_WIDTH};
 pub use buffer::LineEnding;
 use diagnostics::Checker;
 pub use diagnostics::{Diagnostic, Severity};
+pub use render::diagnostic_summary;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use history::{EditKind, UndoStack};
 use ratatui::layout::Rect;
@@ -217,9 +218,9 @@ impl CodeEditor {
     /// describes a text that no longer exists.
     pub fn reload(&mut self, text: &str) {
         let head = self.cursor.sel.head;
-        self.buffer = Buffer::new(text);
+        self.buffer.reload(text);
         self.reset(head);
-        self.recheck();
+        self.refresh_diagnostics();
     }
 
     /// Drops every unsaved edit, keeping the file's line endings.

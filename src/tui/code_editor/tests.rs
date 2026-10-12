@@ -522,6 +522,35 @@ fn a_warning_is_yellow_and_a_clean_buffer_says_so() {
 }
 
 #[test]
+fn reload_and_discard_recheck_the_new_text() {
+    let mut e = py("x = 1\n");
+    e.ed.reload(MISSING_COLON);
+    assert_eq!(e.ed.diagnostics().iter().map(|d| d.message.as_str()).collect::<Vec<_>>(), ["Missing ':'"]);
+    e.ed.reload("x = 1\n");
+    assert_eq!(e.ed.diagnostics(), &[]);
+    e.type_str("(");
+    assert_eq!(e.ed.diagnostics().len(), 1);
+    e.ed.discard();
+    assert_eq!(e.ed.diagnostics(), &[]);
+}
+
+#[test]
+fn a_line_with_an_error_and_a_warning_gets_the_error_marker() {
+    let e = Ed::new("int f(int x) {\n  if (x); return (x;\n}\n", Lang::C);
+    let severities: Vec<Severity> = e.ed.diagnostics().iter().map(|d| d.severity).collect();
+    assert_eq!(severities, [Severity::Warning, Severity::Error]);
+    let screen = e.render(40, 6, false);
+    assert_eq!((screen[(1, 1)].symbol(), screen[(1, 1)].fg), ("●", t::MAGENTA));
+}
+
+#[test]
+fn the_status_line_says_when_the_count_is_capped() {
+    let e = py(&"x = 'a\n".repeat(60));
+    let screen = e.render(60, 6, false);
+    assert_eq!(row(&screen, 5).trim_end(), "● 50+ errors · Ln 1: Unterminated string");
+}
+
+#[test]
 fn fixing_the_mistake_clears_the_diagnostic_and_undo_brings_it_back() {
     let mut e = py(MISSING_COLON);
     assert_eq!(e.ed.diagnostics().len(), 1);
@@ -573,17 +602,27 @@ fn random_typing_with_multibyte_text_never_panics_in_any_language() {
     for lang in Lang::ALL {
         let mut e = Ed::new("", lang);
         for _ in 0..300 {
-            match next(6) {
-                0 => e.press(KeyCode::Enter),
-                1 => e.press(KeyCode::Backspace),
-                2 => e.press([KeyCode::Left, KeyCode::Up, KeyCode::Down, KeyCode::Right][next(4)]),
-                3 => e.press(KeyCode::F(8)),
+            match next(40) {
+                0..5 => e.press(KeyCode::Enter),
+                5..10 => e.press(KeyCode::Backspace),
+                10..15 => e.press([KeyCode::Left, KeyCode::Up, KeyCode::Down, KeyCode::Right][next(4)]),
+                15..17 => e.press(KeyCode::F(8)),
+                17..19 => e.ctrl(['z', 'y', 'x', 'v'][next(4)]),
+                19 => {
+                    e.ed.discard();
+                    Effect::None
+                }
+                20 => {
+                    e.ed.reload("x = (é\n");
+                    Effect::None
+                }
                 _ => {
                     e.ed.paste(pieces[next(pieces.len())], e.now);
                     Effect::None
                 }
             };
             let text = e.text().to_string();
+            assert_eq!(e.ed.diagnostics(), Checker::new(lang).check(&text), "{lang:?} {text:?}");
             for d in e.ed.diagnostics() {
                 assert!(d.range.end <= text.len() && text.is_char_boundary(d.range.start) && text.is_char_boundary(d.range.end));
             }
