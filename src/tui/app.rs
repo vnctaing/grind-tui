@@ -108,10 +108,15 @@ fn modified(path: &Path) -> Option<SystemTime> {
 /// a starter (Premium) never writes, so an existing file is never clobbered.
 fn load_code(problem: &Problem) -> (PathBuf, String) {
     let path = code_file_path(&problem.slug);
-    if let Ok(saved) = std::fs::read_to_string(&path) {
-        if !saved.trim().is_empty() {
-            return (path, saved);
+    match std::fs::read(&path) {
+        Ok(bytes) => {
+            let saved = String::from_utf8_lossy(&bytes).into_owned();
+            if !saved.trim().is_empty() {
+                return (path, saved);
+            }
         }
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return (path, String::new()),
+        Err(_) => {}
     }
     let starter = problem.starter();
     if !starter.is_empty() {
@@ -341,6 +346,20 @@ fn handle_problem_key(app: &mut App, key: KeyCode) -> Action {
 mod tests {
     use super::*;
     use crate::catalog::ProblemId;
+
+    #[test]
+    fn a_solution_that_is_not_utf8_is_shown_and_never_replaced_by_the_starter() {
+        let catalog = Catalog::embedded();
+        let problem = catalog.problems().iter().find(|p| p.slug == "two-sum").unwrap();
+        let path = code_file_path(&problem.slug);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mine = b"// caf\xe9 my work\nvar twoSum = 1;\n";
+        std::fs::write(&path, mine).unwrap();
+
+        let (_, code) = load_code(problem);
+        assert!(code.contains("my work"));
+        assert_eq!(std::fs::read(&path).unwrap(), mine);
+    }
 
     fn app() -> App {
         App::new(Catalog::embedded(), AppState::default(), vec![], ListFilter::All, None)
