@@ -27,6 +27,7 @@ snap vim-reloaded
 expect-file .grind-tui/two-sum.js ~ // edited in vim
 key C
 expect Opened in Cursor, auto-syncing on save.
+expect live from Cursor · c hide
 wait-for Auto-synced from Cursor. ~ 6
 key o o
 expect // saved by cursor stub

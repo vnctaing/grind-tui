@@ -1,5 +1,5 @@
-use super::app::{problem_keys, App, CodeMode, Panel, ProblemView};
-use super::code_editor::diagnostic_summary;
+use super::app::{problem_keys, App, Panel, ProblemView};
+use super::highlight::{highlight_code, with_gutter};
 use super::markdown::render_markdown;
 use super::theme::{self, help_line, panel, t};
 use crate::catalog::{Body, Problem};
@@ -176,20 +176,16 @@ fn draw_editor_bar(f: &mut Frame, area: Rect, app: &App, view: &ProblemView) {
 }
 
 fn draw_code(f: &mut Frame, area: Rect, view: &ProblemView) {
-    let editing = view.mode == CodeMode::Edit;
-    let dirty = if view.editor.is_dirty() { "● unsaved · " } else { "" };
-    let hint = match (editing, &view.detached) {
-        (true, _) => {
-            let (line, col) = view.editor.caret();
-            format!("{dirty}Ln {line}, Col {col} · Esc done")
-        }
-        (false, Some(name)) => format!("{dirty}live from {name} · Enter edit"),
-        (false, None) => format!("{dirty}Enter edit · c hide"),
+    let hint = match &view.detached {
+        Some(name) => format!("live from {name} · c hide"),
+        None => "read-only · c hide".to_string(),
     };
-    let block = panel("Code", &hint, view.focused == Panel::Code || editing);
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    view.editor.render(inner, f.buffer_mut(), editing);
+    f.render_widget(
+        Paragraph::new(with_gutter(highlight_code(&view.code)))
+            .block(panel("Code", &hint, view.focused == Panel::Code))
+            .scroll((view.scroll.code, 0)),
+        area,
+    );
 }
 
 fn draw_status(f: &mut Frame, area: Rect, app: &App, view: &ProblemView, problem: &Problem) {
@@ -199,9 +195,6 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App, view: &ProblemView, problem
             .lines()
             .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(t::FG)))),
     );
-    if view.collapsed.code {
-        lines.push(syntax_row_for_hidden_code(view));
-    }
     if !matches!(problem.body, Body::Premium) {
         lines.push(Line::default());
         lines.extend(examples_block(&problem.examples));
@@ -213,18 +206,6 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App, view: &ProblemView, problem
             .scroll((view.scroll.output, 0)),
         area,
     );
-}
-
-fn syntax_row_for_hidden_code(view: &ProblemView) -> Line<'static> {
-    let mut spans = vec![Span::styled("Syntax  ", Style::default().fg(t::MUTED))];
-    let summary = diagnostic_summary(view.editor.diagnostics());
-    if summary.is_empty() {
-        spans.push(Span::styled("✓ no errors", Style::default().fg(t::MINT)));
-    } else {
-        spans.extend(summary);
-        spans.push(Span::styled("  F8 next", Style::default().fg(t::MUTED)));
-    }
-    Line::from(spans)
 }
 
 fn status_pill(solved: bool) -> Span<'static> {
@@ -240,17 +221,15 @@ mod tests {
     use super::*;
     use crate::catalog::Catalog;
     use crate::state::AppState;
-    use crate::tui::app::{Collapsed, ListFilter, Page, UNSAVED};
+    use crate::tui::app::{Collapsed, ListFilter, Page};
     use ratatui::{backend::TestBackend, buffer::Buffer, style::Color, Terminal};
-
-    const TWO_ERRORS: &str = "function f(x) {\n  return [x\n";
 
     fn app_on(slug: &str) -> App {
         let mut app = App::new(Catalog::embedded(), AppState::default(), vec![], ListFilter::All, None);
         let idx = app.catalog.problems().iter().position(|p| p.slug == slug).unwrap();
         let code = app.catalog.problems()[idx].starter().to_string();
         let path = std::env::temp_dir().join("grind-tui-problem-view-test").join(format!("{slug}.js"));
-        app.page = Page::Problem(ProblemView::new(idx, path, &code));
+        app.page = Page::Problem(ProblemView::new(idx, path, code));
         app
     }
 
@@ -380,50 +359,28 @@ mod tests {
     }
 
     #[test]
-    fn code_panel_is_editable_and_shows_the_caret_only_in_edit_mode() {
+    fn code_panel_is_read_only_with_numbered_highlighted_lines() {
         let mut app = app_on("two-sum");
-        let nav = render(&mut app, 140, 40);
-        let screen = text(&nav);
-        assert!(!screen.contains("read-only"));
-        assert!(screen.contains("Enter edit"));
-        let cyan = |buf: &Buffer| buf.content().iter().filter(|c| c.bg == t::CYAN).count();
+        let buf = render(&mut app, 140, 40);
+        let screen = text(&buf);
+        assert!(screen.contains("read-only · c hide"), "{screen}");
+        let (y, row) = rows(&buf).into_iter().enumerate().find(|(_, r)| r.contains("var twoSum")).unwrap();
+        assert!(row.contains("│ var twoSum = function"), "{row:?}");
+        let x = row.chars().collect::<Vec<_>>().windows(3).position(|w| w == ['v', 'a', 'r']).unwrap();
+        assert_eq!(buf[(x as u16, y as u16)].fg, t::PURPLE, "var is a keyword");
+        assert!(!screen.contains("Enter edit") && !screen.contains("Syntax"));
 
-        view_mut(&mut app).mode = CodeMode::Edit;
-        let edit = render(&mut app, 140, 40);
-        assert!(text(&edit).contains("Ln 1, Col 1 · Esc done"));
-        assert_eq!(cyan(&edit), cyan(&nav) + 1);
+        view_mut(&mut app).detached = Some("Cursor".into());
+        assert!(text(&render(&mut app, 140, 40)).contains("live from Cursor · c hide"));
     }
 
     #[test]
-    fn status_panel_counts_syntax_errors_only_while_the_code_is_hidden() {
+    fn j_scrolls_the_focused_code_panel_past_its_first_line() {
         let mut app = app_on("two-sum");
-        view_mut(&mut app).editor = crate::tui::code_editor::CodeEditor::new(TWO_ERRORS);
-        let shown = text(&render(&mut app, 140, 40));
-        assert!(shown.contains("● 2 errors · Ln 1"), "{shown}");
-        assert!(!shown.contains("Syntax"), "{shown}");
-        view_mut(&mut app).collapsed.code = true;
-        let screen = text(&render(&mut app, 140, 40));
-        assert!(screen.contains("Syntax  ● 2 errors  F8 next"), "{screen}");
-        assert!(!screen.contains("warning"), "{screen}");
-        view_mut(&mut app).editor = crate::tui::code_editor::CodeEditor::new("let x = 1;\n");
-        assert!(text(&render(&mut app, 140, 40)).contains("Syntax  ✓ no errors"));
-    }
-
-    #[test]
-    fn the_unsaved_edits_warning_fits_the_status_panel_at_60x20() {
-        let mut app = app_on("two-sum");
-        view_mut(&mut app).editor = crate::tui::code_editor::CodeEditor::new(TWO_ERRORS);
-        view_mut(&mut app).message = UNSAVED.to_string();
-        let buf = render(&mut app, 60, 20);
-        let top = rows(&buf).iter().position(|r| r.contains("╭ Status ")).unwrap();
-        let left = rows(&buf)[top].chars().position(|c| c == '╭').unwrap();
-        let panel: Vec<String> = rows(&buf)[top + 1..]
-            .iter()
-            .take_while(|r| !r.chars().nth(left).is_some_and(|c| c == '╰'))
-            .map(|r| r.chars().skip(left + 1).collect::<String>().trim_end_matches(['│', ' ']).to_string())
-            .collect();
-        let shown = panel.join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
-        assert!(shown.contains(UNSAVED), "{panel:#?}");
+        let first = |app: &mut App| rows(&render(app, 140, 40)).iter().any(|r| r.contains("1 │ /**"));
+        assert!(first(&mut app));
+        crate::tui::app::handle_key(&mut app, crossterm::event::KeyCode::Char('j'));
+        assert!(!first(&mut app));
     }
 
     #[test]
@@ -455,13 +412,12 @@ mod tests {
         sizes.extend([(80, 24), (140, 40)]);
         for slug in ["two-sum", "meeting-rooms"] {
             let mut app = app_on(slug);
-            for mask in 0..16u8 {
+            for mask in 0..8u8 {
                 view_mut(&mut app).collapsed = Collapsed {
                     desc: mask & 1 != 0,
                     code: mask & 2 != 0,
                     output: mask & 4 != 0,
                 };
-                view_mut(&mut app).mode = if mask & 8 != 0 { CodeMode::Edit } else { CodeMode::Navigate };
                 for &(w, h) in &sizes {
                     render(&mut app, w, h);
                 }

@@ -30,7 +30,7 @@ STUBS = {
     **{
         name: f'echo "{name} $*" >> "$HOME/launched.txt"\n'
         f'( sleep 1; printf "\\n// saved by {name} stub\\n" >> "$1" ) >/dev/null 2>&1 &\n'
-        for name in ("code", "cursor", "zed")
+        for name in ("code", "cursor")
     },
 }
 

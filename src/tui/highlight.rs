@@ -41,7 +41,7 @@ const JS_KEYWORDS: &[&str] = &[
 ];
 
 const COMMENT: &str = "//";
-pub const QUOTES: &[char] = &['"', '\'', '`'];
+const QUOTES: &[char] = &['"', '\'', '`'];
 
 pub fn highlight_code(code: &str) -> Vec<Line<'static>> {
     code.lines().map(highlight_line).collect()
@@ -81,6 +81,22 @@ fn highlight_line(line: &str) -> Line<'static> {
         rest = &rest[len..];
     }
     Line::from(spans)
+}
+
+pub fn with_gutter(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    let width = lines.len().to_string().len();
+    lines
+        .into_iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let mut spans = vec![
+                Span::styled(format!("{:>width$} ", i + 1), Style::default().fg(t::MUTED)),
+                Span::styled("│ ", Style::default().fg(t::BORDER)),
+            ];
+            spans.extend(line.spans);
+            Line::from(spans)
+        })
+        .collect()
 }
 
 fn string_len(s: &str, quote: char) -> usize {
@@ -172,5 +188,16 @@ mod tests {
     fn plain_identifiers_keep_foreground() {
         let lines = highlight_code("total");
         assert_eq!(span_style(&lines, "total").and_then(|s| s.fg), Some(t::FG));
+    }
+
+    #[test]
+    fn gutter_numbers_each_line_right_aligned() {
+        let lines = with_gutter(highlight_code("a\nb\nc\nd\ne\nf\ng\nh\ni\nj"));
+        assert_eq!(lines.len(), 10);
+        assert_eq!(lines[1].spans[0].content, " 2 ");
+        assert_eq!(lines[9].spans[0].content, "10 ");
+        assert_eq!(lines[1].spans[0].style.fg, Some(t::MUTED));
+        assert_eq!(lines[1].spans[1].content, "│ ");
+        assert_eq!(lines[1].spans[1].style.fg, Some(t::BORDER));
     }
 }

@@ -5,10 +5,8 @@ The maintained list of what a user can do in grind-tui and how to prove each one
 | Feature | File | Canonical scenario |
 | --- | --- | --- |
 | List page: filters, search, open, solved, quit | [list-page.md](list-page.md) | `scenarios/list.scn` |
-| Problem page: panels, focus, sync, yank | [problem-page.md](problem-page.md) | `scenarios/problem.scn` |
-| External editors: blocking, detached, blocked | [external-editors.md](external-editors.md) | `scenarios/editors.scn` |
-| Embedded editor: edit, undo, save, reload, discard | [embedded-editor.md](embedded-editor.md) | `scenarios/editor.scn` |
-| Diagnostics: markers, status rows, F8 | [diagnostics.md](diagnostics.md) | `scenarios/diagnostics.scn` |
+| Problem page: read-only code panel, panels, focus, sync, yank | [problem-page.md](problem-page.md) | `scenarios/problem.scn` |
+| External editors: blocking reload, detached auto-sync, blocked | [external-editors.md](external-editors.md) | `scenarios/editors.scn` |
 
 ## Baseline preconditions
 

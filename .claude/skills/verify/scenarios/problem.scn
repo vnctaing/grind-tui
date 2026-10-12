@@ -1,4 +1,4 @@
-# Problem page: panels (p/o/c), Tab focus, sync (y), yank (Y); a state.json from the multi-language version still loads.
+# Problem page: read-only Code panel (gutter, colours, scroll, typing ignored), panels (p/o/c), Tab focus, sync (y), yank (Y); a state.json from the multi-language version still loads.
 size 140x40
 write .grind-tui/state.json
 {"solved":[1],"last_problem_id":1,"language":"rust"}
@@ -10,6 +10,23 @@ wait-for var twoSum
 expect Two Sum
 expect two-sum.js
 expect You are given an array
+expect read-only · c hide
+expect 1 │ /**
+expect │ var twoSum = function(nums, target) {
+expect-ansi 38;2;185;103;255m[^\x1b]*var
+reject Enter edit
+snap code-read-only
+key Enter
+text zzz
+reject zzz
+expect-file .grind-tui/two-sum.js ~ var twoSum = function(nums, target) {
+reject-file .grind-tui/two-sum.js ~ zzz
+key j
+reject 1 │ /**
+expect 2 │  * @param
+snap code-scrolled
+key k
+expect 1 │ /**
 expect-ansi 48;2;255;42;109m Code
 key Tab
 expect-ansi 48;2;255;42;109m Description

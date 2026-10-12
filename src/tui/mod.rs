@@ -1,5 +1,4 @@
 mod app;
-mod code_editor;
 mod editor;
 mod highlight;
 mod list_view;
@@ -10,9 +9,9 @@ mod theme;
 pub use app::{App, ListFilter};
 pub use editor::load_editors;
 
-use app::{handle_key, handle_paste, Action, Page};
+use app::{handle_key, Action, Page};
 use crossterm::{
-    event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind, MouseEventKind},
+    event::{self, Event, KeyEventKind, MouseEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -39,14 +38,14 @@ fn draw(f: &mut Frame, app: &mut App) {
 
 fn suspend_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), crossterm::event::DisableMouseCapture, DisableBracketedPaste)?;
+    execute!(terminal.backend_mut(), crossterm::event::DisableMouseCapture)?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()
 }
 
 fn resume_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
     execute!(terminal.backend_mut(), EnterAlternateScreen)?;
-    execute!(terminal.backend_mut(), crossterm::event::EnableMouseCapture, EnableBracketedPaste)?;
+    execute!(terminal.backend_mut(), crossterm::event::EnableMouseCapture)?;
     enable_raw_mode()?;
     terminal.clear()
 }
@@ -57,12 +56,12 @@ pub fn run(app: &mut App) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
-    execute!(stdout, crossterm::event::EnableMouseCapture, EnableBracketedPaste)?;
+    execute!(stdout, crossterm::event::EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let result = event_loop(&mut terminal, app);
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), crossterm::event::DisableMouseCapture, DisableBracketedPaste)?;
+    execute!(terminal.backend_mut(), crossterm::event::DisableMouseCapture)?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     result
@@ -87,7 +86,6 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
         match event::read()? {
             Event::Mouse(mouse) => {
                 if let Page::Problem(view) = &mut app.page {
-                    view.disarm();
                     match mouse.kind {
                         MouseEventKind::ScrollDown => view.scroll_by(3),
                         MouseEventKind::ScrollUp => view.scroll_by(-3),
@@ -95,20 +93,21 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
                     }
                 }
             }
-            Event::Paste(text) => handle_paste(app, &text),
             Event::Key(key) => {
                 if key.kind != KeyEventKind::Press { continue; }
-                match handle_key(app, key) {
+                match handle_key(app, key.code) {
                     Action::None => {}
                     Action::Quit => return Ok(()),
                     Action::LaunchEditor(ed) => launch_editor(terminal, app, &ed)?,
                     Action::CopyCommand => copy_command(app),
-                    Action::Clipboard(text) => { system_copy(&text).ok(); }
-                }
-            }
-            Event::Resize(..) => {
-                if let Page::Problem(view) = &mut app.page {
-                    view.disarm();
+                    Action::SyncDetached => {
+                        if let Page::Problem(view) = &mut app.page {
+                            view.message = match view.reload() {
+                                Ok(()) => "Synced.".to_string(),
+                                Err(e) => format!("Sync error: {e}"),
+                            };
+                        }
+                    }
                 }
             }
             _ => {}
@@ -130,7 +129,10 @@ fn launch_editor(
         suspend_tui(terminal)?;
         std::process::Command::new(&ed.command).arg(&view.path).status().ok();
         resume_tui(terminal)?;
-        view.reload(&format!("Reloaded from {}.", ed.name));
+        view.message = match view.reload() {
+            Ok(()) => format!("Reloaded from {}.", ed.name),
+            Err(e) => format!("Reload failed: {e}"),
+        };
     }
     Ok(())
 }
