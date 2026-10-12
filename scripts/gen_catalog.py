@@ -12,7 +12,7 @@ scripts/lists.json holds two ordered slug lists, vendored once:
 
 Problems are ordered Grind 75 first, then NeetCode-only problems in NeetCode order.
 Statements come from LeetCode's public GraphQL endpoint and are converted to the markdown-lite
-grammar that src/tui/markdown.rs renders. Premium problems carry no statement or starters.
+grammar that src/tui/markdown.rs renders.
 """
 
 import html.parser
@@ -31,16 +31,6 @@ QUERY = (
     "query q($s: String!){question(titleSlug:$s){questionFrontendId title titleSlug "
     "difficulty isPaidOnly content codeSnippets{langSlug code} exampleTestcases}}"
 )
-STARTER_LANGS = {
-    "python3": "python3",
-    "rust": "rust",
-    "javascript": "javascript",
-    "typescript": "typescript",
-    "java": "java",
-    "cpp": "cpp",
-    "golang": "go",
-    "c": "c",
-}
 DIFFICULTIES = ("Easy", "Medium", "Hard")
 ENTITY_RE = re.compile(r"&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);")
 BLOCK_TAGS = {"p", "div", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6", "table", "tbody", "thead", "tr", "td", "th", "hr", "blockquote"}
@@ -193,20 +183,19 @@ def build_problem(slug, question):
     if premium:
         problem["body"] = {"kind": "premium"}
         return problem
-    starters = {
-        STARTER_LANGS[snippet["langSlug"]]: snippet["code"]
-        for snippet in question["codeSnippets"] or []
-        if snippet["langSlug"] in STARTER_LANGS
-    }
-    if "python3" not in starters:
-        raise SystemExit(f"{slug}: no python3 starter")
+    starter = next(
+        (snippet["code"] for snippet in question["codeSnippets"] or [] if snippet["langSlug"] == "javascript"),
+        None,
+    )
+    if not starter:
+        raise SystemExit(f"{slug}: no javascript starter")
     description = to_markdown_lite(question["content"] or "")
     if not description:
         raise SystemExit(f"{slug}: empty statement")
     for field, text in (("description", description), ("examples", problem["examples"])):
         if TAG_RE.search(text) or ENTITY_RE.search(text):
             raise SystemExit(f"{slug}: markup survived in {field}")
-    problem["body"] = {"kind": "free", "description": description, "starters": starters}
+    problem["body"] = {"kind": "free", "description": description, "starter": starter}
     return problem
 
 

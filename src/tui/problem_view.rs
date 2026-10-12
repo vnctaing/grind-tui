@@ -46,8 +46,6 @@ fn draw_top_bar(f: &mut Frame, area: Rect, app: &App, view: &ProblemView, p: &Pr
             t::BG,
             theme::difficulty_color(p.difficulty),
         ),
-        Span::raw(" "),
-        theme::pill(app.progress.language.label(), t::BG, t::PURPLE),
     ];
     if matches!(p.body, Body::Premium) {
         spans.push(Span::raw(" "));
@@ -245,12 +243,14 @@ mod tests {
     use crate::tui::app::{Collapsed, ListFilter, Page, UNSAVED};
     use ratatui::{backend::TestBackend, buffer::Buffer, style::Color, Terminal};
 
+    const TWO_ERRORS: &str = "function f(x) {\n  return [x\n";
+
     fn app_on(slug: &str) -> App {
         let mut app = App::new(Catalog::embedded(), AppState::default(), vec![], ListFilter::All, None);
         let idx = app.catalog.problems().iter().position(|p| p.slug == slug).unwrap();
-        let code = app.catalog.problems()[idx].starter(app.progress.language).to_string();
-        let path = std::env::temp_dir().join("grind-tui-problem-view-test").join(format!("{slug}.py"));
-        app.page = Page::Problem(ProblemView::new(idx, path, &code, app.progress.language));
+        let code = app.catalog.problems()[idx].starter().to_string();
+        let path = std::env::temp_dir().join("grind-tui-problem-view-test").join(format!("{slug}.js"));
+        app.page = Page::Problem(ProblemView::new(idx, path, &code));
         app
     }
 
@@ -293,6 +293,7 @@ mod tests {
     #[test]
     fn free_description_renders_markdown_without_raw_markup() {
         let mut app = app_on("two-sum");
+        view_mut(&mut app).collapsed.code = true;
         let screen = text(&render(&mut app, 140, 60));
         assert!(screen.contains("Example 1:"));
         for raw in ["&lt;", "&#39;", "**", "`"] {
@@ -396,8 +397,7 @@ mod tests {
     #[test]
     fn status_panel_counts_syntax_errors_only_while_the_code_is_hidden() {
         let mut app = app_on("two-sum");
-        let lang = app.progress.language;
-        view_mut(&mut app).editor = crate::tui::code_editor::CodeEditor::new("def f(x)\n    return [x\n", lang);
+        view_mut(&mut app).editor = crate::tui::code_editor::CodeEditor::new(TWO_ERRORS);
         let shown = text(&render(&mut app, 140, 40));
         assert!(shown.contains("● 2 errors · Ln 1"), "{shown}");
         assert!(!shown.contains("Syntax"), "{shown}");
@@ -405,15 +405,14 @@ mod tests {
         let screen = text(&render(&mut app, 140, 40));
         assert!(screen.contains("Syntax  ● 2 errors  F8 next"), "{screen}");
         assert!(!screen.contains("warning"), "{screen}");
-        view_mut(&mut app).editor = crate::tui::code_editor::CodeEditor::new("x = 1\n", lang);
+        view_mut(&mut app).editor = crate::tui::code_editor::CodeEditor::new("let x = 1;\n");
         assert!(text(&render(&mut app, 140, 40)).contains("Syntax  ✓ no errors"));
     }
 
     #[test]
     fn the_unsaved_edits_warning_fits_the_status_panel_at_60x20() {
         let mut app = app_on("two-sum");
-        let lang = app.progress.language;
-        view_mut(&mut app).editor = crate::tui::code_editor::CodeEditor::new("def f(x)\n    return [x\n", lang);
+        view_mut(&mut app).editor = crate::tui::code_editor::CodeEditor::new(TWO_ERRORS);
         view_mut(&mut app).message = UNSAVED.to_string();
         let buf = render(&mut app, 60, 20);
         let top = rows(&buf).iter().position(|r| r.contains("╭ Status ")).unwrap();

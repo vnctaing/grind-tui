@@ -32,7 +32,7 @@ pub(super) fn render(ed: &CodeEditor, area: Rect, out: &mut ratatui::buffer::Buf
     let caret = show_cursor.then_some(head);
     let selection = ed.cursor.sel.range();
     let marks = marks(buf, &ed.diagnostics);
-    let highlighted = highlight_code(buf.text(), ed.lang);
+    let highlighted = highlight_code(buf.text());
     let top = ed.scroll.top.min(buf.line_count() - 1);
     let rows = top..(top + usize::from(text.height)).min(buf.line_count());
 

@@ -1,6 +1,6 @@
 use super::code_editor::{CodeEditor, Effect};
 use super::editor::{code_file_path, is_trusted, EditorDef};
-use crate::catalog::{Catalog, Difficulty, Lang, ListId, Problem};
+use crate::catalog::{Catalog, Difficulty, ListId, Problem};
 use crate::state::AppState;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::ListState;
@@ -82,15 +82,15 @@ pub struct ProblemView {
 }
 
 impl ProblemView {
-    fn open(idx: usize, problem: &Problem, lang: Lang) -> ProblemView {
-        let (path, code) = load_code(problem, lang);
-        ProblemView::new(idx, path, &code, lang)
+    fn open(idx: usize, problem: &Problem) -> ProblemView {
+        let (path, code) = load_code(problem);
+        ProblemView::new(idx, path, &code)
     }
 
-    pub fn new(idx: usize, path: PathBuf, code: &str, lang: Lang) -> ProblemView {
+    pub fn new(idx: usize, path: PathBuf, code: &str) -> ProblemView {
         let mut view = ProblemView {
             idx,
-            editor: CodeEditor::new(code, lang),
+            editor: CodeEditor::new(code),
             mode: CodeMode::Navigate,
             mtime: modified(&path),
             path,
@@ -244,14 +244,14 @@ fn modified(path: &Path) -> Option<SystemTime> {
 
 /// Saved work wins; otherwise the starter is seeded to disk. A problem without
 /// a starter (Premium) never writes, so an existing file is never clobbered.
-fn load_code(problem: &Problem, lang: Lang) -> (PathBuf, String) {
-    let path = code_file_path(&problem.slug, lang);
+fn load_code(problem: &Problem) -> (PathBuf, String) {
+    let path = code_file_path(&problem.slug);
     if let Ok(saved) = std::fs::read_to_string(&path) {
         if !saved.trim().is_empty() {
             return (path, saved);
         }
     }
-    let starter = problem.starter(lang);
+    let starter = problem.starter();
     if !starter.is_empty() {
         if let Some(dir) = path.parent() { std::fs::create_dir_all(dir).ok(); }
         std::fs::write(&path, starter).ok();
@@ -332,7 +332,7 @@ impl App {
 
     pub fn open_selected(&mut self) {
         if let Some(idx) = self.selected() {
-            let view = ProblemView::open(idx, &self.catalog.problems()[idx], self.progress.language);
+            let view = ProblemView::open(idx, &self.catalog.problems()[idx]);
             self.page = Page::Problem(view);
         }
     }
@@ -348,21 +348,6 @@ impl App {
         let solved = self.progress.solved.contains(&id);
         if let Page::Problem(view) = &mut self.page {
             view.message = if solved { "Marked solved.".into() } else { "Marked unsolved.".into() };
-        }
-    }
-
-    pub fn cycle_lang(&mut self) {
-        let lang = self.progress.language.next();
-        self.progress.language = lang;
-        if let Page::Problem(view) = &mut self.page {
-            let (path, code) = load_code(&self.catalog.problems()[view.idx], lang);
-            view.editor = CodeEditor::new(&code, lang);
-            view.mode = CodeMode::Navigate;
-            view.mtime = modified(&path);
-            view.path = path;
-            view.conflict = None;
-            view.armed = None;
-            view.loaded("");
         }
     }
 
@@ -414,7 +399,6 @@ pub fn problem_keys(app: &App, view: &ProblemView) -> Vec<(&'static str, &'stati
         ("q", "quit"),
         ("Enter", "edit"),
         ("x", if app.is_solved(view.idx) { "unsolve" } else { "solved" }),
-        ("l", app.progress.language.label()),
         ("p", "desc"),
         ("o", "output"),
         ("c", if view.collapsed.code { "show code" } else { "hide code" }),
@@ -504,7 +488,7 @@ fn handle_list_key(app: &mut App, key: KeyCode) -> Action {
 
 fn handle_problem_key(app: &mut App, key: KeyCode) -> Action {
     let launches = |c: char| app.editors.iter().any(|e| e.key == c.to_string());
-    let would_drop_edits = matches!(key, KeyCode::Char(c) if matches!(c, 'q' | 'b' | 'l') || launches(c));
+    let would_drop_edits = matches!(key, KeyCode::Char(c) if matches!(c, 'q' | 'b') || launches(c));
     let Page::Problem(view) = &mut app.page else { return Action::None };
     let armed = view.armed.take();
     if would_drop_edits && view.editor.is_dirty() {
@@ -534,7 +518,6 @@ fn handle_problem_key(app: &mut App, key: KeyCode) -> Action {
         KeyCode::Char('q') => return Action::Quit,
         KeyCode::Char('b') => { app.page = Page::List; return Action::None; }
         KeyCode::Char('x') => { app.toggle_solved(); return Action::None; }
-        KeyCode::Char('l') => { app.cycle_lang(); return Action::None; }
         KeyCode::Char('Y') => return Action::CopyCommand,
         _ => {}
     }
@@ -681,9 +664,9 @@ mod tests {
 
     fn app_with_file(dir: &TempDir, contents: &str) -> (App, PathBuf) {
         let mut app = app();
-        let path = dir.0.join("two-sum.py");
+        let path = dir.0.join("two-sum.js");
         std::fs::write(&path, contents).unwrap();
-        app.page = Page::Problem(ProblemView::new(0, path.clone(), contents, Lang::Python3));
+        app.page = Page::Problem(ProblemView::new(0, path.clone(), contents));
         (app, path)
     }
 
@@ -850,17 +833,14 @@ mod tests {
     }
 
     #[test]
-    fn dirty_buffer_blocks_language_switch_and_external_editors() {
+    fn dirty_buffer_blocks_external_editors() {
         let dir = TempDir::new("guard");
         let (mut app, path) = dirty_in_navigate(&dir);
         app.editors = vec![EditorDef { name: "nvim".into(), key: "e".into(), command: "nvim".into(), detach: false }];
-        let lang = app.progress.language;
 
-        press(&mut app, "l");
-        assert_eq!(app.progress.language, lang);
+        assert!(matches!(key(&mut app, KeyCode::Char('e'), KeyModifiers::NONE), Action::None));
         assert_eq!(view(&mut app).path, path);
         assert_eq!(view(&mut app).editor.text(), "!mine");
-        assert!(matches!(key(&mut app, KeyCode::Char('e'), KeyModifiers::NONE), Action::None));
         assert!(view(&mut app).message.contains("Unsaved"));
 
         view(&mut app).editor.mark_saved();
@@ -1000,12 +980,16 @@ mod tests {
     }
 
     #[test]
-    fn opening_a_problem_writes_under_the_test_config_dir() {
+    fn opening_a_problem_seeds_its_javascript_starter_under_the_test_config_dir() {
         let mut app = app();
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let idx = view(&mut app).idx;
+        let problem = &app.catalog.problems()[idx];
+        let (slug, starter) = (problem.slug.clone(), problem.starter().to_string());
         let path = view(&mut app).path.clone();
-        assert!(path.starts_with(crate::state::config_dir()), "{}", path.display());
-        assert!(path.exists());
+        assert_eq!(path, crate::state::config_dir().join(format!("{slug}.js")));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), starter);
+        assert!(starter.contains("var twoSum = function"), "{starter}");
     }
 
     #[test]
@@ -1031,7 +1015,7 @@ mod tests {
     #[test]
     fn f8_in_navigate_mode_moves_to_the_error_and_shows_its_key() {
         let dir = TempDir::new("f8");
-        let src = "def f(x):\n    return (x\n";
+        let src = "function f(x) {\n  return (x;\n}\n";
         let (mut app, _) = app_with_file(&dir, src);
         view(&mut app).collapsed.code = true;
         let Page::Problem(v) = &app.page else { unreachable!() };

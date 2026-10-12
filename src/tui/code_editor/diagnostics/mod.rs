@@ -1,7 +1,6 @@
 mod lint;
 mod scan;
 
-use crate::catalog::Lang;
 use std::ops::Range;
 use tree_sitter::{Node, Parser};
 
@@ -42,47 +41,30 @@ impl Diagnostic {
 
 pub struct Checker {
     parser: Parser,
-    lang: Lang,
 }
 
 impl Checker {
-    pub fn new(lang: Lang) -> Checker {
+    pub fn new() -> Checker {
         let mut parser = Parser::new();
         parser
-            .set_language(&grammar(lang))
-            .expect("bundled grammars match the tree-sitter ABI");
-        Checker { parser, lang }
+            .set_language(&tree_sitter_javascript::LANGUAGE.into())
+            .expect("bundled grammar matches the tree-sitter ABI");
+        Checker { parser }
     }
 
-    /// Syntax errors, bracket and string balance, and a few precise lints,
-    /// sorted by position.
     pub fn check(&mut self, text: &str) -> Vec<Diagnostic> {
-        let scanned = scan::scan(text, self.lang);
+        let scanned = scan::scan(text);
         let mut found = scanned.diagnostics;
         let mut parse_errors = Vec::new();
         if let Some(tree) = self.parser.parse(text, None) {
-            found.extend(lint::lint(text, &scanned.blank, tree.root_node(), self.lang));
-            collect(tree.root_node(), text, &scanned.blank, self.lang, &mut parse_errors);
+            found.extend(lint::empty_if(&scanned.blank));
+            collect(tree.root_node(), text, &scanned.blank, &mut parse_errors);
         }
-        parse_errors.retain(|p| !scanned.disabled.iter().any(|d| d.contains(&p.span.start)));
         let mut all = merge(found, scanned.unclosed, parse_errors);
         all.sort_by(|a, b| (a.range.start, a.severity).cmp(&(b.range.start, b.severity)));
         all.dedup_by(|a, b| a.range.start == b.range.start && a.message == b.message);
         all.truncate(MAX_DIAGNOSTICS);
         all
-    }
-}
-
-fn grammar(lang: Lang) -> tree_sitter::Language {
-    match lang {
-        Lang::Python3 => tree_sitter_python::LANGUAGE.into(),
-        Lang::Rust => tree_sitter_rust::LANGUAGE.into(),
-        Lang::Javascript => tree_sitter_javascript::LANGUAGE.into(),
-        Lang::Typescript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-        Lang::Java => tree_sitter_java::LANGUAGE.into(),
-        Lang::Cpp => tree_sitter_cpp::LANGUAGE.into(),
-        Lang::Go => tree_sitter_go::LANGUAGE.into(),
-        Lang::C => tree_sitter_c::LANGUAGE.into(),
     }
 }
 
@@ -94,7 +76,7 @@ struct ParseError {
     diagnostic: Diagnostic,
 }
 
-fn collect(node: Node, text: &str, blank: &[u8], lang: Lang, out: &mut Vec<ParseError>) {
+fn collect(node: Node, text: &str, blank: &[u8], out: &mut Vec<ParseError>) {
     if out.len() >= MAX_DIAGNOSTICS {
         return;
     }
@@ -117,7 +99,7 @@ fn collect(node: Node, text: &str, blank: &[u8], lang: Lang, out: &mut Vec<Parse
         out.push(ParseError {
             span: node.byte_range(),
             missing: None,
-            diagnostic: describe_error(node, text, blank, lang),
+            diagnostic: describe_error(node, text, blank),
         });
         return;
     }
@@ -126,25 +108,15 @@ fn collect(node: Node, text: &str, blank: &[u8], lang: Lang, out: &mut Vec<Parse
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect(child, text, blank, lang, out);
+        collect(child, text, blank, out);
     }
 }
 
-/// An ERROR span can cover a whole function, so the diagnostic narrows it
-/// to one token: an operator left dangling at its end, else the spot where
-/// a statement on a new line follows one with no `;`, else its first token.
-fn describe_error(node: Node, text: &str, blank: &[u8], lang: Lang) -> Diagnostic {
+fn describe_error(node: Node, text: &str, blank: &[u8]) -> Diagnostic {
     let last = leaf(node, |n| n.child_count().checked_sub(1).and_then(|i| n.child(i)));
     if dangling_operator(last, blank) {
         let message = format!("Expected an expression after '{}'", last.kind());
         return Diagnostic::error(last.byte_range(), Source::Syntax, message);
-    }
-    if matches!(lang, Lang::Rust | Lang::Java | Lang::C | Lang::Cpp) {
-        let mut cursor = node.walk();
-        let starts = std::iter::once(node.start_byte()).chain(node.children(&mut cursor).map(|c| c.start_byte()));
-        if let Some(at) = starts.filter_map(|start| missing_semicolon(blank, start)).next() {
-            return Diagnostic::error(at..at, Source::Syntax, "Missing ';'");
-        }
     }
     let first = leaf(node, |n| n.child(0)).byte_range();
     let first = first.start..text[first.clone()].find('\n').map_or(first.end, |i| first.start + i);
@@ -171,17 +143,6 @@ fn dangling_operator(token: Node, blank: &[u8]) -> bool {
         && !matches!(kind, ")" | "]" | "}" | ";" | "," | ":");
     let next = blank[token.end_byte()..].iter().find(|c| !matches!(c, b' ' | b'\t' | b'\r'));
     operator && next.is_none_or(|c| matches!(c, b'\n' | b';' | b')' | b']' | b'}'))
-}
-
-/// When the token at `start` opens its line and the code before it ends an
-/// expression, the `;` between them is missing. Returns where it belongs.
-fn missing_semicolon(blank: &[u8], start: usize) -> Option<usize> {
-    let line_start = blank[..start].iter().rposition(|&c| c == b'\n').map_or(0, |p| p + 1);
-    let opens_line = blank[line_start..start].iter().all(u8::is_ascii_whitespace);
-    let starts_statement = blank.get(start).is_some_and(|&c| c.is_ascii_alphabetic() || c == b'_');
-    let prev = blank[..start].iter().rposition(|c| !c.is_ascii_whitespace())?;
-    let ends_expression = blank[prev].is_ascii_alphanumeric() || matches!(blank[prev], b'_' | b')' | b']');
-    (opens_line && starts_statement && ends_expression).then_some(prev + 1)
 }
 
 fn truncate(s: &str, max: usize) -> String {

@@ -1,18 +1,23 @@
-# Problem page: panels (p/o/c), Tab focus, language (l), sync (y), yank (Y).
+# Problem page: panels (p/o/c), Tab focus, sync (y), yank (Y); a state.json from the multi-language version still loads.
 size 140x40
+write .grind-tui/state.json
+{"solved":[1],"last_problem_id":1,"language":"rust"}
+EOF
 launch
+wait-for 1/167
 key Enter
-wait-for class Solution
+wait-for var twoSum
 expect Two Sum
+expect two-sum.js
 expect You are given an array
-expect-ansi 48;2;255;42;109m Code 
+expect-ansi 48;2;255;42;109m Code
 key Tab
-expect-ansi 48;2;255;42;109m Description 
+expect-ansi 48;2;255;42;109m Description
 snap focus-description
 key Tab
-expect-ansi 48;2;255;42;109m Status 
+expect-ansi 48;2;255;42;109m Status
 key Tab
-expect-ansi 48;2;255;42;109m Code 
+expect-ansi 48;2;255;42;109m Code
 key p p
 reject You are given an array
 snap desc-collapsed
@@ -24,21 +29,23 @@ snap output-collapsed
 key o
 expect Examples
 key c
-reject class Solution
+reject var twoSum
 snap code-collapsed
 key c
-expect class Solution
+expect var twoSum
 key y
 expect Synced.
 key Y
 expect Copied: nvim
-expect-file clipboard.txt ~ two-sum.py
+expect-file clipboard.txt ~ two-sum.js
 key l
-expect l Rust
-expect two-sum.rs
-expect impl Solution
-snap rust
+expect two-sum.js
+reject two-sum.rs
+reject impl Solution
+snap no-language-switch
 key q
 expect-exit 0
-expect-file .grind-tui/two-sum.rs ~ impl Solution
-expect-file .grind-tui/state.json ~ rust
+expect-file .grind-tui/two-sum.js ~ var twoSum = function(nums, target)
+reject-file .grind-tui/two-sum.rs
+reject-file .grind-tui/state.json ~ language
+expect-file .grind-tui/state.json ~ "solved": [

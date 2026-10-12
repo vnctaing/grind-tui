@@ -18,10 +18,10 @@ The editor checks the buffer as you type (tree-sitter syntax, bracket balance, a
 
 Preconditions:
 
-- Seed `.grind-tui/two-sum.py` with line 3 `        return [0, 1` (missing `]`) before `launch`.
+- Seed `.grind-tui/two-sum.js` before `launch` with line 2 a template literal (`` `${nums.length}` ``, which must stay clean) and line 3 `    return [0, 1` (missing `]`).
 
 - **Markers.** After opening: `expect ● 1 error`, `expect Ln 3: Unclosed '['`, `expect F8 next error`, `expect-ansi \x1b\[[0-9;:]*\b4[;:m]`.
-- **F8.** `key F8`, `key Enter`. Title shows `Ln 3, Col 16`. Without F8 it shows `Ln 1, Col 1`.
+- **F8.** `key F8`, `key Enter`. Title shows `Ln 3, Col 12`. Without F8 it shows `Ln 1, Col 1`.
 - **Fix.** `key End`, `text ]`. `✓ no syntax errors`, no `● 1 error`; `Esc` saves it.
 
 ## Gotchas

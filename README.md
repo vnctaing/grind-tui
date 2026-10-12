@@ -9,8 +9,8 @@ A terminal UI for LeetCode built with Rust. Fetch problems, browse with search a
 - Browse all LeetCode problems with real-time filtering by difficulty, title, or ID
 - Open problems in your editor (nvim, vim, Cursor, VSCode) with auto-sync on save
 - Run test cases and submit solutions directly from the TUI
-- Persists language preference, solved problems, and last opened problem
-- Multi-language support: python3, rust, javascript, typescript, java, cpp, go
+- Persists solved problems and last opened problem
+- JavaScript only: each solution is `~/.grind-tui/<slug>.js`, seeded with the LeetCode starter
 - Color-coded output with element-level diff highlighting on test failures
 
 ## Install
@@ -94,7 +94,6 @@ grind logout
 - `c` — Collapse/expand code panel
 - `o` — Collapse/expand output panel
 - `p` — Toggle problem description collapse
-- `l` — Change language
 - `j`/`k` — Scroll within focused panel
 - `b` — Back to list
 - `q` — Quit

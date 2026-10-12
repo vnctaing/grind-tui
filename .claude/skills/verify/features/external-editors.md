@@ -19,8 +19,8 @@ Preconditions:
 - Seed `.grind-tui/editors.json` with vim (`v`), Cursor (`C`, detach), and an untrusted `rm` (`X`) before `launch`.
 
 - **Blocked.** `key X`. Status shows `Blocked: 'rm' is not a trusted editor`.
-- **Vim.** `key v`, `wait-for two-sum.py` (vim's own status line), `key G o`, `text # edited in vim`, `key Escape`, `text :wq`, `key Enter`. `wait-for Reloaded from vim.`; code shows the line and the file contains it.
-- **Cursor.** `key C`. `Opened in Cursor, auto-syncing on save.`; `wait-for Auto-synced from Cursor. ~ 6`; code shows `# saved by cursor stub`; `expect-file launched.txt ~ cursor`.
+- **Vim.** `key v`, `wait-for two-sum.js` (vim's own status line), `key G o`, `text // edited in vim`, `key Escape`, `text :wq`, `key Enter`. `wait-for Reloaded from vim.`; code shows the line and the file contains it.
+- **Cursor.** `key C`. `Opened in Cursor, auto-syncing on save.`; `wait-for Auto-synced from Cursor. ~ 6`; `key o o` collapses Status so the code panel fits the whole file at 80x24; code shows `// saved by cursor stub`; `expect-file launched.txt ~ cursor`.
 
 ## Gotchas
 

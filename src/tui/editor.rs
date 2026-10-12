@@ -1,4 +1,3 @@
-use crate::catalog::Lang;
 use crate::state::config_dir;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -67,6 +66,6 @@ pub fn is_trusted(ed: &EditorDef) -> bool {
 
 // ── File helpers ──────────────────────────────────────────────────────────────
 
-pub fn code_file_path(slug: &str, lang: Lang) -> PathBuf {
-    config_dir().join(format!("{}.{}", slug, lang.ext()))
+pub fn code_file_path(slug: &str) -> PathBuf {
+    config_dir().join(format!("{slug}.js"))
 }

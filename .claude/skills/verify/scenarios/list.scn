@@ -20,7 +20,7 @@ reject Two Sum
 snap search
 key Esc
 key Enter
-wait-for valid-parentheses.py
+wait-for valid-parentheses.js
 snap opened
 key b
 wait-for problems
@@ -31,4 +31,4 @@ key q
 expect-exit 0
 expect-file .grind-tui/state.json ~ "last_problem_id": 20
 expect-file .grind-tui/state.json ~ 20
-expect-file .grind-tui/valid-parentheses.py ~ class Solution
+expect-file .grind-tui/valid-parentheses.js ~ var isValid = function

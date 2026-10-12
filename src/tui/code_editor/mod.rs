@@ -4,8 +4,7 @@ mod history;
 mod render;
 mod selection;
 
-use super::highlight::quotes;
-use crate::catalog::Lang;
+use super::highlight::QUOTES;
 use buffer::{display_col, Buffer, EditRecord, TAB_WIDTH};
 pub use buffer::LineEnding;
 use diagnostics::Checker;
@@ -118,7 +117,6 @@ pub struct CodeEditor {
     history: UndoStack,
     clip: Clip,
     saved: String,
-    lang: Lang,
     scroll: Scroll,
     /// Text area size from the last frame, for paging and keeping the caret in view.
     viewport: Cell<Viewport>,
@@ -129,7 +127,7 @@ pub struct CodeEditor {
 }
 
 impl CodeEditor {
-    pub fn new(text: &str, lang: Lang) -> CodeEditor {
+    pub fn new(text: &str) -> CodeEditor {
         let buffer = Buffer::new(text);
         let mut ed = CodeEditor {
             saved: buffer.text().to_string(),
@@ -137,10 +135,9 @@ impl CodeEditor {
             cursor: Cursor::default(),
             history: UndoStack::default(),
             clip: Clip::default(),
-            lang,
             scroll: Scroll::default(),
             viewport: Cell::default(),
-            checker: Checker::new(lang),
+            checker: Checker::new(),
             diagnostics: Vec::new(),
             checked: 0,
         };
@@ -316,7 +313,7 @@ impl CodeEditor {
         let range = sel.range();
         let prev = self.buffer.char_before(range.start);
         let next = self.buffer.char_after(range.end);
-        let quote = quotes(self.lang).contains(&c);
+        let quote = QUOTES.contains(&c);
         if sel.is_empty() && next == Some(c) && (quote || is_closer(c)) {
             return self.cursor.set(Selection::caret(range.end + c.len_utf8()));
         }
@@ -340,11 +337,10 @@ impl CodeEditor {
         let before_caret = &line[..pos.col];
         let indent = &before_caret[..before_caret.len() - before_caret.trim_start().len()];
         let opener = self.buffer.char_before(range.start);
-        let opens = matches!(opener, Some('(' | '[' | '{'))
-            || (self.lang == Lang::Python3 && opener == Some(':'));
+        let opens = matches!(opener, Some('(' | '[' | '{'));
         let mut text = format!("\n{indent}");
         if opens {
-            text.push_str(indent_unit(self.lang));
+            text.push_str(INDENT);
         }
         let caret = range.start + text.len();
         let next = self.buffer.char_after(range.end);
@@ -359,16 +355,11 @@ impl CodeEditor {
         let sel = self.cursor.sel;
         let range = sel.range();
         if self.buffer.pos(range.start).line != self.buffer.pos(range.end).line {
-            return self.edit_line_starts(|_| 0, indent_unit(self.lang), now);
+            return self.edit_line_starts(|_| 0, INDENT, now);
         }
-        let text = match self.lang {
-            Lang::Go => "\t".to_string(),
-            _ => {
-                let pos = self.buffer.pos(range.start);
-                let col = display_col(self.buffer.line(pos.line), pos.col);
-                " ".repeat(TAB_WIDTH - col % TAB_WIDTH)
-            }
-        };
+        let pos = self.buffer.pos(range.start);
+        let col = display_col(self.buffer.line(pos.line), pos.col);
+        let text = " ".repeat(TAB_WIDTH - col % TAB_WIDTH);
         self.edit(range.clone(), &text, range.start + text.len(), EditKind::Other, now);
     }
 
@@ -424,7 +415,7 @@ impl CodeEditor {
             self.buffer.prev_boundary(head)
         };
         let paired = prev.is_some_and(|p| {
-            next.is_some() && (next == closer_of(p) || (quotes(self.lang).contains(&p) && next == Some(p)))
+            next.is_some() && (next == closer_of(p) || (QUOTES.contains(&p) && next == Some(p)))
         });
         let end = if paired { self.buffer.next_boundary(head) } else { head };
         self.edit(start..end, "", start, EditKind::Delete, now);
@@ -497,12 +488,7 @@ impl CodeEditor {
     }
 }
 
-fn indent_unit(lang: Lang) -> &'static str {
-    match lang {
-        Lang::Go => "\t",
-        _ => "    ",
-    }
-}
+const INDENT: &str = "    ";
 
 fn outdent_len(line: &str) -> usize {
     if line.starts_with('\t') {

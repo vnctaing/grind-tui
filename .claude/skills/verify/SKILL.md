@@ -5,7 +5,7 @@ description: Drive the real grind-tui binary (`grind`, a Rust/ratatui TUI) like 
 
 # Verify grind-tui
 
-The surface is one terminal app, `target/release/grind`. It has no server, no login, and no network: the catalog is embedded. All state lives in `$HOME/.grind-tui/` (`state.json`, `editors.json`, one solution file per problem and language such as `two-sum.py`). A verification run is a scenario file of keystrokes and assertions, executed by `scripts/drive.py`.
+The surface is one terminal app, `target/release/grind`. It has no server, no login, and no network: the catalog is embedded. All state lives in `$HOME/.grind-tui/` (`state.json`, `editors.json`, one JavaScript solution file per problem such as `two-sum.js`). A verification run is a scenario file of keystrokes and assertions, executed by `scripts/drive.py`.
 
 Never run the binary against your real HOME. `drive.py` always uses a fresh temp HOME, so the real `~/.grind-tui` is never read or written.
 
@@ -14,7 +14,7 @@ Never run the binary against your real HOME. `drive.py` always uses a fresh temp
 Nothing stays running between runs. `drive.py` does all of this per run:
 
 1. `cargo build --release` in the repo root (a no-op when current).
-2. A fresh temp HOME (`$TMPDIR/grind-verify-home-*`) with `stub-bin/` first on PATH. The stubs shadow `pbcopy` (writes `$HOME/clipboard.txt`, so the host clipboard is untouched) and the GUI editors `code`, `cursor`, `zed` (record the call in `$HOME/launched.txt`, then append `# saved by <name> stub` to the file after 1 s, like a detached editor saving). `vim` and `nvim` are the real ones.
+2. A fresh temp HOME (`$TMPDIR/grind-verify-home-*`) with `stub-bin/` first on PATH. The stubs shadow `pbcopy` (writes `$HOME/clipboard.txt`, so the host clipboard is untouched) and the GUI editors `code`, `cursor`, `zed` (record the call in `$HOME/launched.txt`, then append `// saved by <name> stub` to the file after 1 s, like a detached editor saving). `vim` and `nvim` are the real ones.
 3. A private tmux server `tmux -L grind-verify-<pid> -f /dev/null` with `terminal-features ',*:RGB'`, `remain-on-exit on`, and `escape-time 0`.
 4. The app in session `g` at the requested size, as `env -i HOME=… PATH=… TERM=xterm-256color sandbox-exec -p '(version 1)(allow default)(deny network*)' target/release/grind [args]`.
 
@@ -56,7 +56,7 @@ Scenario steps, one per line (`#` lines are comments):
 | `reject-file REL [~ TEXT]` | `$HOME/REL` is absent, or lacks TEXT. |
 | `expect-exit CODE` | The app exited with CODE (pane is dead). |
 
-Stable handles to assert on are the help bar labels (`Enter edit`, `Esc done`, `F8 next error`), the status messages from `src/tui/app.rs` (`Saved …`, `Reloaded from disk.`, `Discarded unsaved changes.`, `Synced.`, `Auto-synced from Cursor.`), the counters (`167 problems`, `0/167`), and the editor bar path (`two-sum.py`). Pick strings that only the new state can produce: `return [0, 1]` appears in the Two Sum description, so it proves nothing about the editor.
+Stable handles to assert on are the help bar labels (`Enter edit`, `Esc done`, `F8 next error`), the status messages from `src/tui/app.rs` (`Saved …`, `Reloaded from disk.`, `Discarded unsaved changes.`, `Synced.`, `Auto-synced from Cursor.`), the counters (`167 problems`, `0/167`), and the editor bar path (`two-sum.js`). Pick strings that only the new state can produce: `return [0, 1]` appears in the Two Sum description, so it proves nothing about the editor.
 
 ## Evidence
 

@@ -5,14 +5,13 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::catalog::{Lang, ProblemId};
+use crate::catalog::ProblemId;
 
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppState {
     pub solved: HashSet<ProblemId>,
     pub last_problem_id: Option<ProblemId>,
-    pub language: Lang,
 }
 
 #[cfg(not(test))]
@@ -95,21 +94,32 @@ mod tests {
         let dir = temp_dir("legacy");
         fs::write(
             dir.join("state.json"),
-            r#"{"solved":[1,349],"bookmarks":[],"last_problem_id":142,"notes":{},"language":"javascript"}"#,
+            r#"{"solved":[1,349],"bookmarks":[],"last_problem_id":142,"notes":{},"language":"rust"}"#,
         )
         .unwrap();
 
         let mut state = AppState::load(&dir).unwrap();
-        assert_eq!(state.language, Lang::Javascript);
         assert_eq!(state.last_problem_id, Some(ProblemId(142)));
 
         state.toggle_solved(ProblemId(20));
         state.save(&dir).unwrap();
 
+        let saved = fs::read_to_string(dir.join("state.json")).unwrap();
+        assert!(!saved.contains("language"), "{saved}");
         let reloaded = AppState::load(&dir).unwrap();
         let expected: HashSet<ProblemId> = [1, 349, 20].into_iter().map(ProblemId).collect();
         assert_eq!(reloaded.solved, expected);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_language_from_an_older_version_is_ignored() {
+        for lang in ["python3", "rust", "javascript", "typescript", "java", "cpp", "go", "c", "cobol"] {
+            let json = format!(r#"{{"solved":[1],"last_problem_id":1,"language":"{lang}"}}"#);
+            let state: AppState = serde_json::from_str(&json).unwrap_or_else(|e| panic!("{lang}: {e}"));
+            assert_eq!(state.solved, HashSet::from([ProblemId(1)]), "{lang}");
+            assert_eq!(state.last_problem_id, Some(ProblemId(1)), "{lang}");
+        }
     }
 
     #[test]
@@ -126,7 +136,7 @@ mod tests {
     fn missing_fields_default_instead_of_failing() {
         let state: AppState = serde_json::from_str(r#"{"solved":[349]}"#).unwrap();
         assert!(state.solved.contains(&ProblemId(349)));
-        assert_eq!(state.language, Lang::Python3);
+        assert_eq!(state.last_problem_id, None);
     }
 
     #[test]

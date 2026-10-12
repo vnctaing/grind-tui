@@ -9,8 +9,8 @@ struct Ed {
 }
 
 impl Ed {
-    fn new(text: &str, lang: Lang) -> Ed {
-        Ed { ed: CodeEditor::new(text, lang), now: Instant::now() }
+    fn new(text: &str) -> Ed {
+        Ed { ed: CodeEditor::new(text), now: Instant::now() }
     }
 
     fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> Effect {
@@ -50,10 +50,6 @@ impl Ed {
     }
 }
 
-fn py(text: &str) -> Ed {
-    Ed::new(text, Lang::Python3)
-}
-
 fn row(screen: &Screen, y: u16) -> String {
     (0..screen.area.width).map(|x| screen[(x, y)].symbol()).collect()
 }
@@ -72,7 +68,7 @@ fn cells_with_bg(screen: &Screen, bg: ratatui::style::Color) -> Vec<(u16, u16, S
 
 #[test]
 fn typing_backspace_undo_redo_round_trip() {
-    let mut e = py("");
+    let mut e = Ed::new("");
     e.type_str("abc");
     e.wait(1000);
     e.press(KeyCode::Backspace);
@@ -91,7 +87,7 @@ fn typing_backspace_undo_redo_round_trip() {
 
 #[test]
 fn undo_groups_typing_within_300ms_and_splits_after_a_pause() {
-    let mut e = py("");
+    let mut e = Ed::new("");
     e.type_str("ab");
     e.wait(200);
     e.type_str("c");
@@ -105,7 +101,7 @@ fn undo_groups_typing_within_300ms_and_splits_after_a_pause() {
 
 #[test]
 fn caret_jump_and_newline_break_the_undo_group() {
-    let mut e = py("");
+    let mut e = Ed::new("");
     e.type_str("ab");
     e.press(KeyCode::Left);
     e.type_str("X");
@@ -120,7 +116,7 @@ fn caret_jump_and_newline_break_the_undo_group() {
 
 #[test]
 fn new_edit_after_undo_clears_redo() {
-    let mut e = py("");
+    let mut e = Ed::new("");
     e.type_str("a");
     e.ctrl('z');
     e.type_str("b");
@@ -130,7 +126,7 @@ fn new_edit_after_undo_clears_redo() {
 
 #[test]
 fn typing_replaces_the_selection_and_undo_restores_it() {
-    let mut e = py("hello world");
+    let mut e = Ed::new("hello world");
     e.ctrl('a');
     e.type_str("x");
     assert_eq!(e.text(), "x");
@@ -141,7 +137,7 @@ fn typing_replaces_the_selection_and_undo_restores_it() {
 
 #[test]
 fn shift_selection_then_backspace_deletes_it() {
-    let mut e = py("hello");
+    let mut e = Ed::new("hello");
     e.key(KeyCode::Right, KeyModifiers::SHIFT);
     e.key(KeyCode::Right, KeyModifiers::SHIFT);
     e.press(KeyCode::Backspace);
@@ -150,43 +146,32 @@ fn shift_selection_then_backspace_deletes_it() {
 
 #[test]
 fn enter_copies_indent_and_indents_after_an_opener() {
-    let mut e = py("    x = 1");
+    let mut e = Ed::new("    x = 1");
     e.press(KeyCode::End);
     e.press(KeyCode::Enter);
     assert_eq!(e.text(), "    x = 1\n    ");
 
-    let mut e = py("def f():");
+    let mut e = Ed::new("function f() {");
     e.press(KeyCode::End);
     e.press(KeyCode::Enter);
-    assert_eq!(e.text(), "def f():\n    ");
+    assert_eq!(e.text(), "function f() {\n    ");
     assert_eq!(e.head(), e.text().len());
 }
 
 #[test]
 fn enter_between_braces_opens_an_indented_block() {
-    let mut e = Ed::new("fn f() ", Lang::Rust);
+    let mut e = Ed::new("function f() ");
     e.press(KeyCode::End);
     e.type_str("{");
-    assert_eq!(e.text(), "fn f() {}");
+    assert_eq!(e.text(), "function f() {}");
     e.press(KeyCode::Enter);
-    assert_eq!(e.text(), "fn f() {\n    \n}");
-    assert_eq!(e.head(), "fn f() {\n    ".len());
-}
-
-#[test]
-fn go_indents_with_tabs() {
-    let mut e = Ed::new("func f() {}", Lang::Go);
-    e.press(KeyCode::End);
-    e.press(KeyCode::Left);
-    e.press(KeyCode::Enter);
-    assert_eq!(e.text(), "func f() {\n\t\n}");
-    e.press(KeyCode::Tab);
-    assert_eq!(e.text(), "func f() {\n\t\t\n}");
+    assert_eq!(e.text(), "function f() {\n    \n}");
+    assert_eq!(e.head(), "function f() {\n    ".len());
 }
 
 #[test]
 fn brackets_and_quotes_auto_close_and_step_over() {
-    let mut e = py("");
+    let mut e = Ed::new("");
     e.type_str("f(");
     assert_eq!((e.text(), e.head()), ("f()", 2));
     e.type_str("\"a");
@@ -197,28 +182,21 @@ fn brackets_and_quotes_auto_close_and_step_over() {
 
 #[test]
 fn apostrophe_after_a_letter_does_not_pair() {
-    let mut e = py("");
+    let mut e = Ed::new("");
     e.type_str("don't");
     assert_eq!(e.text(), "don't");
 }
 
 #[test]
-fn rust_lifetimes_do_not_pair() {
-    let mut e = Ed::new("", Lang::Rust);
-    e.type_str("&'a");
-    assert_eq!(e.text(), "&'a");
-}
-
-#[test]
 fn opener_before_a_word_does_not_pair() {
-    let mut e = py("x");
+    let mut e = Ed::new("x");
     e.type_str("(");
     assert_eq!(e.text(), "(x");
 }
 
 #[test]
 fn backspace_inside_an_empty_pair_removes_both() {
-    let mut e = py("");
+    let mut e = Ed::new("");
     e.type_str("[");
     e.press(KeyCode::Backspace);
     assert_eq!(e.text(), "");
@@ -226,7 +204,7 @@ fn backspace_inside_an_empty_pair_removes_both() {
 
 #[test]
 fn backspace_in_leading_spaces_removes_to_the_previous_tab_stop() {
-    let mut e = py("      x");
+    let mut e = Ed::new("      x");
     e.press(KeyCode::Right);
     for _ in 0..5 {
         e.press(KeyCode::Right);
@@ -239,7 +217,7 @@ fn backspace_in_leading_spaces_removes_to_the_previous_tab_stop() {
 
 #[test]
 fn backspace_and_delete_remove_whole_chars() {
-    let mut e = py("aé漢");
+    let mut e = Ed::new("aé漢");
     e.press(KeyCode::End);
     e.press(KeyCode::Backspace);
     assert_eq!(e.text(), "aé");
@@ -251,7 +229,7 @@ fn backspace_and_delete_remove_whole_chars() {
 
 #[test]
 fn ctrl_and_alt_arrows_jump_words() {
-    let mut e = py("foo.bar baz");
+    let mut e = Ed::new("foo.bar baz");
     e.key(KeyCode::Right, KeyModifiers::CONTROL);
     assert_eq!(e.head(), 3);
     e.key(KeyCode::Right, KeyModifiers::ALT);
@@ -264,7 +242,7 @@ fn ctrl_and_alt_arrows_jump_words() {
 
 #[test]
 fn tab_and_shift_tab_indent_every_selected_line_as_one_step() {
-    let mut e = py("a\nb\nc");
+    let mut e = Ed::new("a\nb\nc");
     e.key(KeyCode::Down, KeyModifiers::SHIFT);
     e.key(KeyCode::Right, KeyModifiers::SHIFT);
     e.press(KeyCode::Tab);
@@ -279,7 +257,7 @@ fn tab_and_shift_tab_indent_every_selected_line_as_one_step() {
 
 #[test]
 fn tab_with_no_selection_pads_to_the_next_stop() {
-    let mut e = py("ab");
+    let mut e = Ed::new("ab");
     e.press(KeyCode::End);
     e.press(KeyCode::Tab);
     assert_eq!(e.text(), "ab  ");
@@ -287,7 +265,7 @@ fn tab_with_no_selection_pads_to_the_next_stop() {
 
 #[test]
 fn copy_paste_and_cut_use_the_internal_register() {
-    let mut e = py("one two");
+    let mut e = Ed::new("one two");
     e.key(KeyCode::Right, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
     assert_eq!(e.ctrl('c'), Effect::Copy("one".into()));
     e.press(KeyCode::End);
@@ -301,7 +279,7 @@ fn copy_paste_and_cut_use_the_internal_register() {
 
 #[test]
 fn cut_with_no_selection_takes_the_line_and_paste_puts_it_above() {
-    let mut e = py("a\nb\nc");
+    let mut e = Ed::new("a\nb\nc");
     e.press(KeyCode::Down);
     assert_eq!(e.ctrl('x'), Effect::Copy("b\n".into()));
     assert_eq!(e.text(), "a\nc");
@@ -311,7 +289,7 @@ fn cut_with_no_selection_takes_the_line_and_paste_puts_it_above() {
 
 #[test]
 fn bracketed_paste_inserts_text_with_unix_newlines() {
-    let mut e = py("");
+    let mut e = Ed::new("");
     e.ed.paste("x\r\ny", e.now);
     assert_eq!(e.text(), "x\ny");
     assert_eq!(e.head(), 3);
@@ -319,13 +297,13 @@ fn bracketed_paste_inserts_text_with_unix_newlines() {
 
 #[test]
 fn ctrl_s_asks_the_caller_to_save() {
-    let mut e = py("");
+    let mut e = Ed::new("");
     assert_eq!(e.ctrl('s'), Effect::Save);
 }
 
 #[test]
 fn dirty_tracks_the_saved_text_through_undo() {
-    let mut e = py("x");
+    let mut e = Ed::new("x");
     e.type_str("a");
     assert!(e.ed.is_dirty());
     e.ctrl('z');
@@ -337,7 +315,7 @@ fn dirty_tracks_the_saved_text_through_undo() {
 
 #[test]
 fn renders_selection_and_cursor_cells() {
-    let mut e = py("hello");
+    let mut e = Ed::new("hello");
     e.key(KeyCode::Right, KeyModifiers::SHIFT);
     e.key(KeyCode::Right, KeyModifiers::SHIFT);
     let screen = e.render(20, 3, true);
@@ -352,7 +330,7 @@ fn renders_selection_and_cursor_cells() {
 
 #[test]
 fn cursor_at_line_end_and_tabs_render_as_cells() {
-    let mut e = Ed::new("\t// x", Lang::Go);
+    let mut e = Ed::new("\t// x");
     e.press(KeyCode::End);
     let screen = e.render(20, 2, true);
     assert_eq!(row(&screen, 0), "1 │     // x        ");
@@ -361,16 +339,16 @@ fn cursor_at_line_end_and_tabs_render_as_cells() {
 
 #[test]
 fn syntax_colors_come_from_the_highlighter() {
-    let e = py("def f(): return 42");
+    let e = Ed::new("const x = 42;");
     let screen = e.render(30, 1, false);
     assert_eq!(screen[(4, 0)].fg, t::PURPLE);
-    assert_eq!(screen[(20, 0)].fg, t::YELLOW);
+    assert_eq!(screen[(14, 0)].fg, t::YELLOW);
 }
 
 #[test]
 fn vertical_scroll_follows_the_cursor() {
     let text: String = (1..=50).map(|i| format!("line{i}\n")).collect();
-    let mut e = py(&text);
+    let mut e = Ed::new(&text);
     e.render(20, 6, true);
     for _ in 0..20 {
         e.press(KeyCode::Down);
@@ -386,7 +364,7 @@ fn vertical_scroll_follows_the_cursor() {
 #[test]
 fn horizontal_scroll_keeps_the_cursor_visible() {
     let long = format!("{}END", "x".repeat(40));
-    let mut e = py(&long);
+    let mut e = Ed::new(&long);
     e.render(20, 2, true);
     e.press(KeyCode::End);
     let screen = e.render(20, 2, true);
@@ -401,7 +379,7 @@ fn horizontal_scroll_keeps_the_cursor_visible() {
 #[test]
 fn scroll_by_moves_the_view_without_moving_the_cursor() {
     let text: String = (1..=30).map(|i| format!("{i}\n")).collect();
-    let mut e = py(&text);
+    let mut e = Ed::new(&text);
     e.ed.scroll_by(10);
     let screen = e.render(12, 3, true);
     assert_eq!(row(&screen, 0).trim_end(), "11 │ 11");
@@ -412,7 +390,7 @@ fn scroll_by_moves_the_view_without_moving_the_cursor() {
 
 #[test]
 fn tiny_areas_never_panic() {
-    let mut e = py("漢字\tx\n\n   é");
+    let mut e = Ed::new("漢字\tx\n\n   é");
     e.press(KeyCode::Down);
     e.press(KeyCode::Down);
     e.press(KeyCode::End);
@@ -428,7 +406,7 @@ fn tiny_areas_never_panic() {
 
 #[test]
 fn copy_and_cut_on_a_blank_line_do_nothing() {
-    let mut e = py("a\n\n    \nb");
+    let mut e = Ed::new("a\n\n    \nb");
     e.press(KeyCode::Down);
     assert_eq!(e.ctrl('c'), Effect::None);
     assert_eq!(e.ctrl('x'), Effect::None);
@@ -436,7 +414,7 @@ fn copy_and_cut_on_a_blank_line_do_nothing() {
     assert_eq!(e.ctrl('x'), Effect::None);
     assert_eq!(e.text(), "a\n\n    \nb");
 
-    let mut e = py("a");
+    let mut e = Ed::new("a");
     e.press(KeyCode::End);
     e.press(KeyCode::Enter);
     assert_eq!(e.ctrl('x'), Effect::None);
@@ -446,7 +424,7 @@ fn copy_and_cut_on_a_blank_line_do_nothing() {
 
 #[test]
 fn ctrl_alt_chords_type_text_and_alt_letters_insert_except_word_jumps() {
-    let mut e = py("");
+    let mut e = Ed::new("");
     e.key(KeyCode::Char('@'), KeyModifiers::CONTROL | KeyModifiers::ALT);
     assert_eq!(e.key(KeyCode::Char('s'), KeyModifiers::CONTROL | KeyModifiers::ALT), Effect::None);
     e.key(KeyCode::Char('x'), KeyModifiers::ALT);
@@ -457,7 +435,7 @@ fn ctrl_alt_chords_type_text_and_alt_letters_insert_except_word_jumps() {
 
 #[test]
 fn tab_over_lines_leaves_empty_lines_empty() {
-    let mut e = py("a\n\nb");
+    let mut e = Ed::new("a\n\nb");
     e.ctrl('a');
     e.press(KeyCode::Tab);
     assert_eq!(e.text(), "    a\n\n    b");
@@ -467,7 +445,7 @@ fn tab_over_lines_leaves_empty_lines_empty() {
 
 #[test]
 fn contents_keep_the_files_crlf_line_endings() {
-    let mut e = py("a\r\nb");
+    let mut e = Ed::new("a\r\nb");
     e.press(KeyCode::Down);
     e.press(KeyCode::End);
     e.press(KeyCode::Enter);
@@ -478,7 +456,7 @@ fn contents_keep_the_files_crlf_line_endings() {
 
 #[test]
 fn discard_restores_the_saved_text_with_its_line_endings() {
-    let mut e = py("a\r\nb");
+    let mut e = Ed::new("a\r\nb");
     e.press(KeyCode::Enter);
     e.type_str("x");
     assert!(e.ed.is_dirty());
@@ -489,27 +467,27 @@ fn discard_restores_the_saved_text_with_its_line_endings() {
     assert_eq!(e.text(), "a\nb");
 }
 
-const MISSING_COLON: &str = "def f(x):\n    if x > 1\n        return x\n";
+const MISSING_BRACKET: &str = "function f(x) {\n  return [x;\n}\n";
 
 #[test]
 fn an_error_gets_a_gutter_marker_an_underline_and_a_status_line() {
-    let e = py(MISSING_COLON);
+    let e = Ed::new(MISSING_BRACKET);
     let screen = e.render(40, 6, false);
-    assert_eq!(row(&screen, 1).trim_end(), "2●│     if x > 1");
+    assert_eq!(row(&screen, 1).trim_end(), "2●│   return [x;");
     assert_eq!(screen[(1, 1)].fg, t::MAGENTA);
     assert_eq!(row(&screen, 0).chars().nth(1), Some(' '));
     let underlined: Vec<(u16, u16)> = (0..40)
         .flat_map(|x| (0..5).map(move |y| (x, y)))
         .filter(|&(x, y)| screen[(x, y)].modifier.contains(ratatui::style::Modifier::UNDERLINED))
         .collect();
-    assert_eq!(underlined, vec![(16, 1)], "the cell after `if x > 1`");
-    assert_eq!(screen[(16, 1)].fg, t::MAGENTA);
-    assert_eq!(row(&screen, 5).trim_end(), "● 1 error · Ln 2: Missing ':'");
+    assert_eq!(underlined, vec![(15, 1)], "the cell after `return [x`");
+    assert_eq!(screen[(15, 1)].fg, t::MAGENTA);
+    assert_eq!(row(&screen, 5).trim_end(), "● 1 error · Ln 2: Missing ']'");
 }
 
 #[test]
 fn a_warning_is_yellow_and_a_clean_buffer_says_so() {
-    let e = Ed::new("int f(int x) {\n  if (x);\n  return x;\n}\n", Lang::C);
+    let e = Ed::new("function f(x) {\n  if (x);\n  return x;\n}\n");
     let screen = e.render(60, 6, false);
     assert_eq!(screen[(1, 1)].symbol(), "▲");
     assert_eq!(screen[(1, 1)].fg, t::YELLOW);
@@ -517,26 +495,26 @@ fn a_warning_is_yellow_and_a_clean_buffer_says_so() {
     assert_eq!(screen[(12, 1)].fg, t::YELLOW);
     assert_eq!(row(&screen, 5).trim_end(), "▲ 1 warning · Ln 2: Empty statement after 'if'");
 
-    let clean = py("x = 1\n").render(40, 4, false);
+    let clean = Ed::new("let x = 1;\n").render(40, 4, false);
     assert_eq!(row(&clean, 3).trim_end(), "✓ no syntax errors");
 }
 
 #[test]
 fn reload_and_discard_recheck_the_new_text() {
-    let mut e = py("x = 1\n");
-    e.ed.reload(MISSING_COLON);
-    assert_eq!(e.ed.diagnostics().iter().map(|d| d.message.as_str()).collect::<Vec<_>>(), ["Missing ':'"]);
-    e.ed.reload("x = 1\n");
+    let mut e = Ed::new("let x = 1;\n");
+    e.ed.reload(MISSING_BRACKET);
+    assert_eq!(e.ed.diagnostics().iter().map(|d| d.message.as_str()).collect::<Vec<_>>(), ["Missing ']'"]);
+    e.ed.reload("let x = 1;\n");
     assert_eq!(e.ed.diagnostics(), &[]);
     e.type_str("(");
-    assert_eq!(e.ed.diagnostics().len(), 1);
+    assert!(!e.ed.diagnostics().is_empty());
     e.ed.discard();
     assert_eq!(e.ed.diagnostics(), &[]);
 }
 
 #[test]
 fn a_line_with_an_error_and_a_warning_gets_the_error_marker() {
-    let e = Ed::new("int f(int x) {\n  if (x); return (x;\n}\n", Lang::C);
+    let e = Ed::new("function f(x) {\n  if (x); return (x;\n}\n");
     let severities: Vec<Severity> = e.ed.diagnostics().iter().map(|d| d.severity).collect();
     assert_eq!(severities, [Severity::Warning, Severity::Error]);
     let screen = e.render(40, 6, false);
@@ -545,18 +523,17 @@ fn a_line_with_an_error_and_a_warning_gets_the_error_marker() {
 
 #[test]
 fn the_status_line_says_when_the_count_is_capped() {
-    let e = py(&"x = 'a\n".repeat(60));
+    let e = Ed::new(&"x = 'a\n".repeat(60));
     let screen = e.render(60, 6, false);
     assert_eq!(row(&screen, 5).trim_end(), "● 50+ errors · Ln 1: Unterminated string");
 }
 
 #[test]
 fn fixing_the_mistake_clears_the_diagnostic_and_undo_brings_it_back() {
-    let mut e = py(MISSING_COLON);
+    let mut e = Ed::new(MISSING_BRACKET);
     assert_eq!(e.ed.diagnostics().len(), 1);
-    e.press(KeyCode::Down);
-    e.press(KeyCode::End);
-    e.type_str(":");
+    e.press(KeyCode::F(8));
+    e.type_str("]");
     assert_eq!(e.ed.diagnostics(), &[]);
     e.ctrl('z');
     assert_eq!(e.ed.diagnostics().len(), 1);
@@ -564,10 +541,10 @@ fn fixing_the_mistake_clears_the_diagnostic_and_undo_brings_it_back() {
 
 #[test]
 fn f8_and_alt_e_jump_to_the_next_diagnostic_and_wrap() {
-    let src = "def f(x):\n    if x > 1\n        return (x\n";
-    let mut e = py(src);
+    let src = "function f(x) {\n  const a = [x;\n  return (x;\n}\n";
+    let mut e = Ed::new(src);
     let starts: Vec<usize> = e.ed.diagnostics().iter().map(|d| d.range.start).collect();
-    assert_eq!(starts, vec![src.find(" 1\n").unwrap() + 2, src.rfind("(x").unwrap()]);
+    assert_eq!(starts, vec![src.find("x;").unwrap() + 1, src.rfind("x;").unwrap() + 1]);
     e.press(KeyCode::F(8));
     assert_eq!(e.head(), starts[0]);
     e.key(KeyCode::Char('e'), KeyModifiers::ALT);
@@ -576,13 +553,13 @@ fn f8_and_alt_e_jump_to_the_next_diagnostic_and_wrap() {
     e.press(KeyCode::F(8));
     assert_eq!(e.head(), starts[0]);
     let screen = e.render(40, 6, true);
-    assert_eq!(row(&screen, 5).trim_end(), "● 2 errors · Ln 2: Missing ':'");
+    assert_eq!(row(&screen, 5).trim_end(), "● 2 errors · Ln 2: Missing ']'");
 }
 
 #[test]
 fn f8_scrolls_a_far_diagnostic_into_view() {
     let text = format!("{}x = (1\n", "y = 2\n".repeat(40));
-    let mut e = py(&text);
+    let mut e = Ed::new(&text);
     e.render(30, 6, true);
     e.press(KeyCode::F(8));
     let screen = e.render(30, 6, true);
@@ -590,7 +567,7 @@ fn f8_scrolls_a_far_diagnostic_into_view() {
 }
 
 #[test]
-fn random_typing_with_multibyte_text_never_panics_in_any_language() {
+fn random_typing_with_multibyte_text_never_panics() {
     let pieces = ["(", ")", "{", "}", "[", "\"", "'", "`", "${", "/*", "#", "é", "漢", "🦀", "\t", "x", " ", ";", ":", "="];
     let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
     let mut next = |n: usize| {
@@ -599,8 +576,8 @@ fn random_typing_with_multibyte_text_never_panics_in_any_language() {
         seed ^= seed << 17;
         (seed % n as u64) as usize
     };
-    for lang in Lang::ALL {
-        let mut e = Ed::new("", lang);
+    for _ in 0..8 {
+        let mut e = Ed::new("");
         for _ in 0..300 {
             match next(40) {
                 0..5 => e.press(KeyCode::Enter),
@@ -622,7 +599,7 @@ fn random_typing_with_multibyte_text_never_panics_in_any_language() {
                 }
             };
             let text = e.text().to_string();
-            assert_eq!(e.ed.diagnostics(), Checker::new(lang).check(&text), "{lang:?} {text:?}");
+            assert_eq!(e.ed.diagnostics(), Checker::new().check(&text), "{text:?}");
             for d in e.ed.diagnostics() {
                 assert!(d.range.end <= text.len() && text.is_char_boundary(d.range.start) && text.is_char_boundary(d.range.end));
             }

@@ -5,7 +5,7 @@ The maintained list of what a user can do in grind-tui and how to prove each one
 | Feature | File | Canonical scenario |
 | --- | --- | --- |
 | List page: filters, search, open, solved, quit | [list-page.md](list-page.md) | `scenarios/list.scn` |
-| Problem page: panels, focus, language, sync, yank | [problem-page.md](problem-page.md) | `scenarios/problem.scn` |
+| Problem page: panels, focus, sync, yank | [problem-page.md](problem-page.md) | `scenarios/problem.scn` |
 | External editors: blocking, detached, blocked | [external-editors.md](external-editors.md) | `scenarios/editors.scn` |
 | Embedded editor: edit, undo, save, reload, discard | [embedded-editor.md](embedded-editor.md) | `scenarios/editor.scn` |
 | Diagnostics: markers, status rows, F8 | [diagnostics.md](diagnostics.md) | `scenarios/diagnostics.scn` |
@@ -15,7 +15,7 @@ The maintained list of what a user can do in grind-tui and how to prove each one
 - Fresh temp HOME with an empty `.grind-tui/` (the app writes `editors.json` on first launch).
 - No network (`sandbox-exec` denies it). Nothing in the app needs it.
 - Sizes 140x40 and 80x24. `run_all.sh` runs every scenario at both.
-- Opening the first row of the default `All` list opens 1 Two Sum, Python, starter `class Solution: … def twoSum`.
+- Opening the first row of the default `All` list opens 1 Two Sum, file `two-sum.js`, starter `var twoSum = function(nums, target) {`. JavaScript is the only language.
 
 ## Driving conventions
 

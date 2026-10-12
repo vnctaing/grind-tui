@@ -15,83 +15,12 @@ pub enum Difficulty {
     Hard,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Lang {
-    #[default]
-    Python3,
-    Rust,
-    Javascript,
-    Typescript,
-    Java,
-    Cpp,
-    Go,
-    C,
-}
-
-impl Lang {
-    pub const ALL: [Lang; 8] = [
-        Lang::Python3,
-        Lang::Rust,
-        Lang::Javascript,
-        Lang::Typescript,
-        Lang::Java,
-        Lang::Cpp,
-        Lang::Go,
-        Lang::C,
-    ];
-
-    pub fn next(self) -> Lang {
-        let i = Lang::ALL.iter().position(|&l| l == self).unwrap_or(0);
-        Lang::ALL[(i + 1) % Lang::ALL.len()]
-    }
-
-    pub fn slug(self) -> &'static str {
-        match self {
-            Lang::Python3 => "python3",
-            Lang::Rust => "rust",
-            Lang::Javascript => "javascript",
-            Lang::Typescript => "typescript",
-            Lang::Java => "java",
-            Lang::Cpp => "cpp",
-            Lang::Go => "go",
-            Lang::C => "c",
-        }
-    }
-
-    pub fn ext(self) -> &'static str {
-        match self {
-            Lang::Python3 => "py",
-            Lang::Rust => "rs",
-            Lang::Javascript => "js",
-            Lang::Typescript => "ts",
-            Lang::Java => "java",
-            Lang::Cpp => "cpp",
-            Lang::Go => "go",
-            Lang::C => "c",
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Lang::Python3 => "Python",
-            Lang::Rust => "Rust",
-            Lang::Javascript => "JavaScript",
-            Lang::Typescript => "TypeScript",
-            Lang::Java => "Java",
-            Lang::Cpp => "C++",
-            Lang::Go => "Go",
-            Lang::C => "C",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Body {
     Free {
         description: String,
-        starters: HashMap<Lang, String>,
+        starter: String,
     },
     Premium,
 }
@@ -107,9 +36,9 @@ pub struct Problem {
 }
 
 impl Problem {
-    pub fn starter(&self, lang: Lang) -> &str {
+    pub fn starter(&self) -> &str {
         match &self.body {
-            Body::Free { starters, .. } => starters.get(&lang).map_or("", String::as_str),
+            Body::Free { starter, .. } => starter,
             Body::Premium => "",
         }
     }
@@ -259,24 +188,19 @@ mod tests {
         let c = Catalog::embedded();
         let meeting = &c.problems()[index_of(&c, "meeting-rooms")];
         assert!(matches!(meeting.body, Body::Premium));
-        assert_eq!(meeting.starter(Lang::Python3), "");
+        assert_eq!(meeting.starter(), "");
     }
 
     #[test]
-    fn every_free_problem_has_python_starter() {
+    fn every_free_problem_has_a_javascript_starter() {
         let c = Catalog::embedded();
         for p in c.problems() {
             if matches!(p.body, Body::Free { .. }) {
-                assert!(!p.starter(Lang::Python3).is_empty(), "{}", p.slug);
+                assert!(!p.starter().is_empty(), "{}", p.slug);
             }
         }
-    }
-
-    #[test]
-    fn go_starter_uses_golang_snippet() {
-        let c = Catalog::embedded();
         let two_sum = &c.problems()[index_of(&c, "two-sum")];
-        assert!(two_sum.starter(Lang::Go).contains("func twoSum"));
+        assert!(two_sum.starter().contains("var twoSum = function(nums, target)"), "{}", two_sum.starter());
     }
 
     #[test]
@@ -314,28 +238,5 @@ mod tests {
         }
         let err = parse_value(&v).err().unwrap();
         assert!(err.contains("two-sum"), "{err}");
-    }
-
-    #[test]
-    fn lang_deserializes_from_state_string() {
-        let lang: Lang = serde_json::from_str("\"javascript\"").unwrap();
-        assert_eq!(lang, Lang::Javascript);
-    }
-
-    #[test]
-    fn lang_serde_name_matches_slug() {
-        for lang in Lang::ALL {
-            let json = serde_json::to_string(&lang).unwrap();
-            assert_eq!(json, format!("\"{}\"", lang.slug()));
-        }
-    }
-
-    #[test]
-    fn lang_next_cycles_through_all() {
-        let mut lang = Lang::default();
-        for expected in Lang::ALL.iter().cycle().skip(1).take(Lang::ALL.len()) {
-            lang = lang.next();
-            assert_eq!(lang, *expected);
-        }
     }
 }

@@ -23,7 +23,7 @@ Preconditions:
 
 - **Filter.** `key t` three times. Counter reads `75 problems`, `150 problems`, then `167 problems`; help bar shows `t Grind 75`, `t NeetCode 150`.
 - **Search.** `key /` then `text parenth`. Rows `Valid Parentheses` and `Generate Parentheses` show, `Two Sum` does not.
-- **Open.** `key Esc` then `key Enter`. Editor bar shows `valid-parentheses.py`; `key b` returns.
+- **Open.** `key Esc` then `key Enter`. Editor bar shows `valid-parentheses.js`; `key b` returns.
 - **Solved.** `key x`. Header reads `1/167` and the row has a check mark.
 - **Persist.** `key q`, `expect-exit 0`, `expect-file .grind-tui/state.json ~ "last_problem_id": 20`.
 - **CLI filter.** `launch --list grind75 --difficulty easy` then `expect` an Easy-only count. Not in the canonical scenario.
