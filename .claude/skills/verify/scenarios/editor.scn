@@ -1,0 +1,42 @@
+# Embedded editor: Enter edit, typing, undo, Ctrl-S save, Esc, Ctrl-R twice, Ctrl-Q twice.
+size 140x40
+launch
+key Enter
+wait-for class Solution
+key Enter
+expect Esc done
+key C-End
+text return [7, 7]
+expect ● unsaved
+expect return [7, 7]
+snap typed
+key C-z
+reject return [7, 7]
+key C-y
+expect return [7, 7]
+key C-s
+wait-for Saved
+reject ● unsaved
+expect-file .grind-tui/two-sum.py ~ return [7, 7]
+snap saved
+key Esc
+expect Enter edit
+key Enter
+text  # scratch
+key C-r
+expect press Ctrl-R
+key C-r
+expect Reloaded from disk.
+reject # scratch
+text  # doomed
+key C-q
+expect press Ctrl-Q
+key C-q
+expect Discarded unsaved changes.
+reject # doomed
+expect Enter edit
+snap discarded
+expect-file .grind-tui/two-sum.py ~ return [7, 7]
+reject-file .grind-tui/two-sum.py ~ doomed
+key q
+expect-exit 0

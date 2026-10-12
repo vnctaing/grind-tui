@@ -1,0 +1,44 @@
+# Problem page: panels (p/o/c), Tab focus, language (l), sync (y), yank (Y).
+size 140x40
+launch
+key Enter
+wait-for class Solution
+expect Two Sum
+expect You are given an array
+expect-ansi 48;2;255;42;109m Code 
+key Tab
+expect-ansi 48;2;255;42;109m Description 
+snap focus-description
+key Tab
+expect-ansi 48;2;255;42;109m Status 
+key Tab
+expect-ansi 48;2;255;42;109m Code 
+key p p
+reject You are given an array
+snap desc-collapsed
+key p
+expect You are given an array
+key o o
+reject Examples
+snap output-collapsed
+key o
+expect Examples
+key c
+reject class Solution
+snap code-collapsed
+key c
+expect class Solution
+key y
+expect Synced.
+key Y
+expect Copied: nvim
+expect-file clipboard.txt ~ two-sum.py
+key l
+expect l Rust
+expect two-sum.rs
+expect impl Solution
+snap rust
+key q
+expect-exit 0
+expect-file .grind-tui/two-sum.rs ~ impl Solution
+expect-file .grind-tui/state.json ~ rust

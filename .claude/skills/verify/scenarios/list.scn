@@ -1,0 +1,34 @@
+# List page: filters (t), search (/), open (Enter), back (b), solved (x), quit (q).
+size 140x40
+launch
+wait-for 167 problems
+expect 0/167
+snap list-all
+key t
+expect 75 problems
+expect t Grind 75
+key t
+expect 150 problems
+expect t NeetCode 150
+key t
+expect 167 problems
+key /
+text parenth
+expect Valid Parentheses
+expect Generate Parentheses
+reject Two Sum
+snap search
+key Esc
+key Enter
+wait-for valid-parentheses.py
+snap opened
+key b
+wait-for problems
+key x
+expect 1/167
+snap solved
+key q
+expect-exit 0
+expect-file .grind-tui/state.json ~ "last_problem_id": 20
+expect-file .grind-tui/state.json ~ 20
+expect-file .grind-tui/valid-parentheses.py ~ class Solution
